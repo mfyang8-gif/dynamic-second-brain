@@ -1,0 +1,8 @@
+server:
+  port: 8082
+
+logging:
+  level:
+    com.yangmf.auto_travel_plan: DEBUG
+    com.yangmf.auto_travel_plan.mapper: DEBUG
+    root: INFO

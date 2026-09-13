@@ -1,0 +1,23 @@
+server:
+  port: 8080
+
+spring:
+  profiles:
+    active: dev
+  servlet:
+    encoding:
+      charset: UTF-8
+      force: true
+
+# LangChain4j
+langchain4j:
+  open-ai:
+    chat-model:
+      api-key: 2f2c5560-2549-47ce-8a73-5b39e6b7a455
+      model-name: doubao-seed-2-0-pro-260215
+      base-url: https://ark.cn-beijing.volces.com/api/v3
+      timeout: 240s
+    embedding-model:
+      api-key: sk-770db1ffaa7e4fff80ed1f95259b121f
+      model-name: text-embedding-v4
+      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
