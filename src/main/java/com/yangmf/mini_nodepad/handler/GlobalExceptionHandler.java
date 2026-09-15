@@ -1,9 +1,11 @@
+/*
 package com.yangmf.mini_nodepad.handler;
 
 
 import com.yangmf.mini_nodepad.exception.*;
 import com.yangmf.mini_nodepad.result.Result;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -23,6 +25,16 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Void> handleNoResourceFoundException(NoResourceFoundException e) {
         log.debug("静态资源未找到: {}", e.getMessage());
         return ResponseEntity.notFound().build();
+    }
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<Result<Void>> handleConstraintViolationException(ConstraintViolationException e, HttpServletRequest request) {
+        StringBuilder msg = new StringBuilder("参数校验失败：");
+        e.getConstraintViolations().forEach(violation -> {
+            msg.append(violation.getPropertyPath()).append(" ").append(violation.getMessage()).append("; ");
+        });
+        log.warn("路径参数校验失败: {}", msg);
+        return ResponseEntity.badRequest()
+                .body(Result.error(400, msg.toString(), getRequestId(request)));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -102,4 +114,4 @@ public class GlobalExceptionHandler {
     private String getRequestId(HttpServletRequest request) {
         return (String) request.getAttribute(REQUEST_ID_ATTR);
     }
-}
+}*/

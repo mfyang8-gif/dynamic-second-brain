@@ -8,16 +8,108 @@ spring:
     encoding:
       charset: UTF-8
       force: true
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://192.168.88.130:3306/dynamic_brain?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=utf-8&zeroDateTimeBehavior=convertToNull&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: root
+    hikari:
+      connection-timeout: 10000
+      maximum-pool-size: 5
+  data:
+    redis:
+      host: 192.168.88.130
+      port: 6379
+      password:
+      database: 0
+      timeout: 10000ms
+    qdrant:
+      host: 192.168.88.130
+      port: 6334
+      http-port: 6333
+      use-tls: false
+      collections:
+        # 第 1 个集合：动态第二大脑知识库
+        - name: dynamic_brain
+          dimension: 1536
+          indexes:
+            - name: bookId
+              type: keyword
+            - name: userId
+              type: keyword
+            - name: createdAt
+              type: integer
+    web:
+      resources:
+        add-mappings: true
+mfyang:
+  jwt:
+    admin-secret-key: this-is-a-secure-admin-secret-key-at-least-32-chars
 
+    admin-ttl: 7200000
+
+    admin-token-name: token
+    user-secret-key: this-is-a-secure-user-secret-key-at-least-32-chars
+    user-ttl: 7200000
+    user-token-name: authorization
 # LangChain4j
 langchain4j:
   open-ai:
-    chat-model:
+    #chat-model:
+    # api-key: sk-f38e965c0f724bdda338d58711de2770
+    # model-name: deepseek-chat
+    #base-url: https://api.deepseek.com
+    #log-requests: true
+    #log-responses: true
+    #    chat-model:
+    #     api-key: sk-770db1ffaa7e4fff80ed1f95259b121f
+    #     model-name: qwen3.5-plus
+    #     base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    #     log-requests: true
+    #     log-responses: true
+    #     timeout: 60
+    streaming-chat-model:
       api-key: 2f2c5560-2549-47ce-8a73-5b39e6b7a455
       model-name: doubao-seed-2-0-pro-260215
       base-url: https://ark.cn-beijing.volces.com/api/v3
+      log-requests: true
+      log-responses: true
       timeout: 240s
+      streaming: true
+      max-tokens: 8192
+      temperature: 0.7
+    chat-model:
+      api-key: sk-f38e965c0f724bdda338d58711de2770
+      model-name: deepseek-v4-flash
+      base-url: https://api.deepseek.com
+      log-requests: true
+      log-responses: true
+      timeout: 120s
+      streaming: true
+      temperature: 0.7
     embedding-model:
       api-key: sk-770db1ffaa7e4fff80ed1f95259b121f
       model-name: text-embedding-v4
       base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      log-requests: true
+      log-responses: true
+      timeout: 120s
+  community:
+    dashscope:
+      chat-model:
+        api-key: sk-770db1ffaa7e4fff80ed1f95259b121f
+        model-name: qwen-turbo
+
+pagehelper:
+  helper-dialect: mysql
+  reasonable: true
+  support-methods-arguments: true
+  params: count=countSql
+
+mybatis-plus:
+  mapper-locations: classpath:mapper/*.xml
+  global-config:
+    db-config:
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0

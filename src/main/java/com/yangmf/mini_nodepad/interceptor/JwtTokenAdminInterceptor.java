@@ -6,7 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yangmf.mini_nodepad.context.BaseContext;
 import com.yangmf.mini_nodepad.properties.JwtProperties;
 import com.yangmf.mini_nodepad.result.Result;
-import com.yangmf.mini_nodepad.service.impl.TokenService;
+import com.yangmf.mini_nodepad.service.TokenService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;

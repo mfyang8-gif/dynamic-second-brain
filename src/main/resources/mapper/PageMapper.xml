@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="com.yangmf.mini_nodepad.mapper.PageMapper">
+
+    <!-- 子查询片段：当前用户拥有的书本ID（复用，避免重复写） -->
+    <sql id="ownedBookSubQuery">
+        SELECT id FROM book WHERE user_id = #{userId} AND deleted = 0
+    </sql>
+
+    <!-- 查询回收站列表 -->
+    <select id="selectRecycleBin" resultType="com.yangmf.mini_nodepad.pojo.entity.Page">
+        SELECT * FROM page
+        WHERE deleted = 1
+        AND book_id IN (<include refid="ownedBookSubQuery"/>)
+        ORDER BY deleted_at DESC
+    </select>
+
+    <!-- 单个永久删除（从回收站） -->
+    <delete id="permanentDeleteById">
+        DELETE FROM page
+        WHERE id = #{id}
+        AND deleted = 1
+        AND book_id IN (<include refid="ownedBookSubQuery"/>)
+    </delete>
+
+    <!-- 批量永久删除（从回收站） -->
+    <delete id="batchPermanentDeleteByIds">
+        DELETE FROM page
+        WHERE deleted = 1
+        AND id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+        AND book_id IN (<include refid="ownedBookSubQuery"/>)
+    </delete>
+
+    <!-- 单个恢复 -->
+    <update id="restoreById">
+        UPDATE page
+        SET deleted = 0, deleted_at = NULL
+        WHERE id = #{id}
+        AND deleted = 1
+        AND book_id IN (<include refid="ownedBookSubQuery"/>)
+    </update>
+
+    <!-- 批量恢复 -->
+    <update id="batchRestoreByIds">
+        UPDATE page
+        SET deleted = 0, deleted_at = NULL
+        WHERE deleted = 1
+        AND id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+        AND book_id IN (<include refid="ownedBookSubQuery"/>)
+    </update>
+
+    <!-- 清空回收站 -->
+    <delete id="permanentDeleteRecycleBin">
+        DELETE FROM page
+        WHERE deleted = 1
+        AND book_id IN (<include refid="ownedBookSubQuery"/>)
+    </delete>
+
+    <!-- 定时任务：清理过期回收站数据 -->
+    <delete id="cleanExpiredRecycleBin">
+        DELETE FROM page
+        WHERE deleted = 1
+          AND deleted_at &lt; #{beforeTime}
+    </delete>
+
+</mapper>

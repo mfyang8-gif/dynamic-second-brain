@@ -56,8 +56,10 @@ public class Result<T> implements Serializable {
      * 根据枚举构建响应，但支持自定义错误信息 (适用于抛出全局异常时)
      */
     public static <T> Result<T> build(ResultCodeEnum resultCodeEnum, String customMsg) {
-        Result<T> result = build(resultCodeEnum, null);
+        Result<T> result = new Result<>();
+        result.setCode(resultCodeEnum.getCode());
         result.setMsg(customMsg);
+        result.setTimestamp(System.currentTimeMillis());
         return result;
     }
 

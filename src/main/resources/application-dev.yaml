@@ -3,6 +3,6 @@ server:
 
 logging:
   level:
-    com.yangmf.auto_travel_plan: DEBUG
-    com.yangmf.auto_travel_plan.mapper: DEBUG
+    com.yangmf.mini_nodepad: DEBUG
+    com.yangmf.mini_nodepad.mapper: DEBUG
     root: INFO

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="com.yangmf.mini_nodepad.mapper.BookMapper">
+
+    <!-- 当前 Book 的 CRUD 全部由 MyBatis-Plus 的 BaseMapper 处理 -->
+    <!-- 后续如有复杂查询（如关联统计、大厅列表等）在此处添加 -->
+
+</mapper>

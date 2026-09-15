@@ -5,7 +5,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>4.1.1</version>
+        <version>3.4.0</version>
         <relativePath/> <!-- lookup parent from repository -->
     </parent>
     <groupId>com.yangmf</groupId>
@@ -34,6 +34,7 @@
         <mybatis-plus.version>3.5.13</mybatis-plus.version>
         <mybatis.version>3.5.16</mybatis.version>
         <pagehelper.version>1.4.2</pagehelper.version>
+        <jieba-analysis.version>1.0.2</jieba-analysis.version>
     </properties>
     <dependencyManagement>
         <dependencies>
@@ -91,7 +92,12 @@
             <artifactId>pagehelper-spring-boot-starter</artifactId>
             <version>${pagehelper.version}</version>
         </dependency>
-
+        <!--  Jieba Analysis -->
+        <dependency>
+            <groupId>com.huaban</groupId>
+            <artifactId>jieba-analysis</artifactId>
+            <version>${jieba-analysis.version}</version>
+        </dependency>
         <!-- Knife4j -->
         <dependency>
             <groupId>com.github.xingfudeshi</groupId>

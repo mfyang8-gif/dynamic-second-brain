@@ -1,4 +1,4 @@
-package com.yangmf.mini_nodepad.service.impl;
+package com.yangmf.mini_nodepad.service;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
