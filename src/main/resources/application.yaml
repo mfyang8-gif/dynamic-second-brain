@@ -31,7 +31,7 @@ spring:
       collections:
         # 第 1 个集合：动态第二大脑知识库
         - name: dynamic_brain
-          dimension: 1536
+          dimension: 1024
           indexes:
             - name: bookId
               type: keyword
