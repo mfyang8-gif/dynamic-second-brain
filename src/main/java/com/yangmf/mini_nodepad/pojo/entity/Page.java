@@ -39,8 +39,8 @@ public class Page implements Serializable {
     @Schema(description = "来源类型")
     private SourceTypeEnum sourceType;
 
-    @Schema(description = "Qdrant向量点ID")
-    private String qdrantPointId;
+    @Schema(description = "向量分块数量")
+    private Integer chunkCount;
 
     // ================== AI 流水线状态控制机 ==================
     @Schema(description = "是否开启AI自动清洗 0-关闭 1-开启")

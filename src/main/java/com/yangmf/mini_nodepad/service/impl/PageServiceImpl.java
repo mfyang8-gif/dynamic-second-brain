@@ -46,46 +46,6 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
 
     //TODO:智能插入，先判断是否已存在该内容，如果存在则合并+清洗，不存在则插入新
 
-    //TODO：入库qdrant时候选择的结构以及字段
-
-    /**
-     *
-     * TODO:. 权限与边界隔离（必须有，且必须建 Qdrant 索引）
-     * userId (String)：绝对核心！向量库是全局共享的，搜索时必须强制带上 userId 过滤，否则用户 A 就能搜到用户 B 的私人笔记（哪怕你没加这层隔离，作为一个企业级项目也必须养成习惯）。
-     *
-     * bookId (String)：正如你所想，必加字段！用户经常会在“指定的一本书”或“指定的几个知识库”范围内进行搜索。
-     *
-     * 2. 时间排序与范围检索（必须转为时间戳存）
-     * createdAt (Long / Integer)：存 Unix 时间戳（秒级）。
-     *
-     * 为什么需要？ 用户未来一定会搜“帮我总结一下最近一周关于Java的笔记”。大模型无法直接处理“最近一周”，必须靠 Qdrant 利用 createdAt >= timestamp 进行前置过滤！
-     *
-     * 3. 搜索结果瞬时展示（避免 MySQL 回表查询）
-     * 当 Qdrant 返回相似度最高的 5 条结果时，前端需要立刻展示卡片，如果再去 MySQL 查一遍，延迟就太高了。
-     *
-     * title (String)：保存 AI 生成的或用户手写的标题。
-     *
-     * summary (String)：保存 AI 提取的百字摘要。
-     *
-     * sourceType (String)：(枚举的 name())，方便前端在搜索结果旁边展示不同的 Icon（比如网络摘录显示个地球，手动输入显示个键盘）。
-     *
-     * 🚫 千万别塞进 Qdrant 的“毒药”字段
-     * 大正文 content (Text)：
-     *
-     * 绝对不要塞入 Payload！ Markdown 正文动辄几万字，放进 Payload 会瞬间撑爆 Qdrant 的内存，导致检索变慢。
-     *
-     * 正确做法：前端拿到 Qdrant 返回的 title 和 summary 列表后，用户点击某一条，前端再拿着 pointId（即 page.id）去请求 MySQL 拿全部的 content 详情。
-     *
-     * deleted 和 deletedAt (Integer/Date)：
-     *
-     * 不要放！ 向量库不应该搞“逻辑删除”。MySQL 里逻辑删除（deleted=1）的数据，在 Qdrant 里应该被直接物理删除（调用咱们写好的 qdrantTemplate.delete()）。别让垃圾数据浪费昂贵的向量算力。
-     *
-     * autoOptimize 和 allowAiModify：
-     *
-     * 这些纯粹是 Ingest 流水线和后续 Agent 任务调度的业务控制标记，跟“语义检索”毫无关系，放进去没有任何意义。
-     * @param dto
-     */
-    //
 
 
     @Override
