@@ -1,4 +1,4 @@
-/*
+
 package com.yangmf.mini_nodepad.handler;
 
 
@@ -114,4 +114,4 @@ public class GlobalExceptionHandler {
     private String getRequestId(HttpServletRequest request) {
         return (String) request.getAttribute(REQUEST_ID_ATTR);
     }
-}*/
+}

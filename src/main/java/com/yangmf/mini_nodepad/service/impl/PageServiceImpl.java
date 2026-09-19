@@ -1,3 +1,4 @@
+
 package com.yangmf.mini_nodepad.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -7,6 +8,7 @@ import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
 import com.yangmf.mini_nodepad.aiservice.PageAssistant;
 import com.yangmf.mini_nodepad.context.BaseContext;
+import com.yangmf.mini_nodepad.encoder.Bm25SparseEncoder;
 import com.yangmf.mini_nodepad.enums.SourceTypeEnum;
 import com.yangmf.mini_nodepad.exception.BusinessException;
 import com.yangmf.mini_nodepad.exception.ForbiddenException;
@@ -19,6 +21,7 @@ import com.yangmf.mini_nodepad.pojo.vo.PageVO;
 import com.yangmf.mini_nodepad.result.PageResult;
 import com.yangmf.mini_nodepad.service.PageAsyncService;
 import com.yangmf.mini_nodepad.service.PageService;
+import com.yangmf.mini_nodepad.utils.QdrantTemplate;
 import com.yangmf.mini_nodepad.utils.TextProcessManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -34,25 +37,23 @@ import java.util.List;
 public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements PageService {
 
     private final PageMapper pageMapper;
-
     private final PageAssistant pageAssistant;
-
     private final PageAsyncService pageAsyncService;
-
     private final TextProcessManager textCleaner;
+    private final QdrantTemplate qdrantTemplate;
+    private final Bm25SparseEncoder bm25Encoder;
 
+    private static final String COLLECTION_NAME = "dynamic_brain";
 
-
-
-    //TODO:智能插入，先判断是否已存在该内容，如果存在则合并+清洗，不存在则插入新
-
-
+    /**
+     * BM25 漂移阈值：累计移除的文档数达到此值后，自动触发全量重建
+     */
+    private static final int BM25_DRIFT_THRESHOLD = 20;
 
     @Override
     public void ingestPage(PageIngestDTO dto) {
         String currentUserId = getCurrentUserId();
 
-        // 1. 毫秒级的物理清洗兜底 (防止没开 AI 时存进去的全是脏字符)
         String fastCleanText = textCleaner.physicalClean(dto.getContent());
 
         Page page = new Page();
@@ -67,22 +68,17 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
             }
         }
 
-        // 2. AI 状态机初始化：开启自动清洗 → 处理中(1)，否则 → 不处理(0)
         boolean needAiProcess = Integer.valueOf(1).equals(dto.getAutoOptimize());
         page.setAiProcessStatus(needAiProcess ? 1 : 0);
 
-        // 3. 瞬间落库 MySQL，前端直接拿到 200 OK
         this.save(page);
         log.info("知识页初次录入成功，ID: {}, bookId: {}, aiStatus: {}",
                 page.getId(), page.getBookId(), page.getAiProcessStatus());
 
-        // 4. 如果开启了 AI，将任务丢入有界线程池去后台跑
         if (needAiProcess) {
             pageAsyncService.processAiIngest(page.getId(), fastCleanText, page.getBookId(), currentUserId);
         }
     }
-
-
 
     @Override
     public PageVO getPageById(String id) {
@@ -151,23 +147,31 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
     @Override
     public void permanentDeletePage(String id) {
         String currentUserId = getCurrentUserId();
+
+        cleanupQdrantAndBm25(id);
+
         if (pageMapper.permanentDeleteById(id, currentUserId) == 0) {
             throw new ForbiddenException("无权操作该知识页");
         }
-        log.info("知识页已永久删除，ID: {}", id);
+        log.info("知识页已永久删除 | pageId={}, userId={}（Qdrant + BM25 已清理）", id, currentUserId);
     }
 
     @Override
     public void permanentDeletePages(List<String> ids) {
         String currentUserId = getCurrentUserId();
+
+        for (String pageId : ids) {
+            cleanupQdrantAndBm25(pageId);
+        }
+
         int affected = pageMapper.batchPermanentDeleteByIds(ids, currentUserId);
         if (affected == 0) {
             throw new ForbiddenException("无权操作这些知识页");
         }
         if (affected < ids.size()) {
-            log.warn("批量永久删除部分跳过，请求: {} 条，实际: {} 条，userId: {}", ids.size(), affected, currentUserId);
+            log.warn("批量永久删除部分跳过 | 请求: {} 条，实际: {} 条，userId: {}", ids.size(), affected, currentUserId);
         }
-        log.info("批量永久删除，userId: {}, 成功: {} 条", currentUserId, affected);
+        log.info("批量永久删除完成 | userId: {}, 成功: {} 条（Qdrant + BM25 已清理）", currentUserId, affected);
     }
 
     @Override
@@ -217,26 +221,69 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
     @Override
     public void emptyRecycleBin() {
         String currentUserId = getCurrentUserId();
+
+        List<Page> recycleBinPages = pageMapper.selectRecycleBin(currentUserId);
+        if (!recycleBinPages.isEmpty()) {
+            for (Page page : recycleBinPages) {
+                cleanupQdrantAndBm25(page.getId());
+            }
+        }
+
         int count = pageMapper.permanentDeleteRecycleBin(currentUserId);
-        log.info("回收站已清空，userId: {}, 共永久删除 {} 条", currentUserId, count);
+        log.info("回收站已清空 | userId: {}, 共永久删除 {} 条（Qdrant + BM25 已清理）", currentUserId, count);
+
+        if (count > 0) {
+            log.info("清空回收站后，异步触发 BM25 全量重建");
+            Thread.startVirtualThread(() -> {
+                try {
+                    bm25Encoder.resetDriftCounter();
+                    rebuildBm25Index();
+                } catch (Exception e) {
+                    log.error("BM25 清空回收站后自动重建失败", e);
+                }
+            });
+        }
+    }
+
+    @Override
+    public void rebuildBm25Index() {
+        log.info("BM25 全量重建触发");
+
+        List<String> allRawTexts;
+        try {
+            allRawTexts = qdrantTemplate.fetchChunkRawTextsByPageId(COLLECTION_NAME, null);
+        } catch (Exception e) {
+            log.error("BM25 重建失败：无法从 Qdrant 获取 chunk 数据", e);
+            throw new BusinessException("BM25 重建失败：向量库查询异常", e);
+        }
+
+        if (allRawTexts.isEmpty()) {
+            log.warn("Qdrant 中无 chunk 数据，BM25 将被重置为空表");
+            bm25Encoder.reset();
+            return;
+        }
+
+        try {
+            bm25Encoder.rebuildFromChunks(allRawTexts);
+        } catch (Exception e) {
+            log.error("BM25 重建失败：编码器处理异常 (chunkCount={})", allRawTexts.size(), e);
+            throw new BusinessException("BM25 重建失败：编码器处理异常", e);
+        }
+
+        log.info("BM25 全量重建完成 | chunks={}", allRawTexts.size());
     }
 
     @Override
     public String generateTitlePreview(String content) {
-        // 1. 前置防御与清洗：如果文本太短，直接返回，别浪费大模型 Token
-
         if (content == null || content.trim().length() < 5) {
             log.warn("文本太短，无法生成标题");
             throw new ValidationException("文本太短，无法生成标题");
         }
 
-        // 2. 截断超长文本（假设你的模型最多吃 2000 字，防止 Token 溢出报错）
         String safeContent = content.length() > 10000 ? content.substring(0, 10000) : content;
 
-        // 3. 记录日志，方便未来追踪 AI 调用成本
         log.info("用户 [{}] 触发 AI 标题预览，文本长度: {}", getCurrentUserId(), safeContent.length());
 
-        // 4. 调用大模型
         try {
             return pageAssistant.generateTitle(safeContent);
         } catch (Exception e) {
@@ -245,10 +292,8 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
         }
     }
 
-
     @Override
     public String generateSummaryPreview(String content) {
-        // 同理，做前置清洗、日志记录和异常拦截
         if (content == null || content.trim().length() < 10) {
             log.warn("文本太短，无法生成摘要");
             throw new ValidationException("文本太短，无法生成摘要");
@@ -262,23 +307,85 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
             throw new ValidationException("AI 生成摘要失败", e);
         }
     }
+
+    @Override
+    public void retryAiProcess(String id) {
+        String currentUserId = getCurrentUserId();
+        Page page = getByIdWithOwnershipCheck(id);
+
+        Integer status = page.getAiProcessStatus();
+        if (status != null && status == 2) {
+            throw new BusinessException("该知识页已处理成功，无需重试");
+        }
+        if (status != null && status == 1) {
+            throw new BusinessException("该知识页正在处理中，请勿重复提交");
+        }
+
+        page.setAiProcessStatus(1);
+        page.setAiProcessMsg("重试中...");
+        page.setUpdatedAt(LocalDateTime.now());
+        pageMapper.updateById(page);
+
+        log.info("知识页 AI 重试触发 | pageId={}, userId={}", id, currentUserId);
+        pageAsyncService.processAiIngest(id, page.getContent(), page.getBookId(), currentUserId);
+    }
+
     // ==================== 私有方法 ====================
+
+    /**
+     * 清理单个 pageId 的 Qdrant 向量 + BM25 统计（best-effort，失败不阻断主流程）
+     * 执行顺序：① 取回 chunk 文本 → ② 递减 BM25 → ③ 删除 Qdrant 向量
+     * 如果 BM25 漂移达到阈值，自动异步触发全量重建
+     */
+    private void cleanupQdrantAndBm25(String pageId) {
+        List<String> chunkTexts = List.of();
+
+        try {
+            chunkTexts = qdrantTemplate.fetchChunkRawTextsByPageId(COLLECTION_NAME, pageId);
+        } catch (Exception e) {
+            log.warn("BM25 递减前置失败：无法取回 chunk 文本 | pageId={}，BM25 统计将产生漂移", pageId, e);
+        }
+
+        if (!chunkTexts.isEmpty()) {
+            int removedCount = 0;
+            for (String text : chunkTexts) {
+                try {
+                    bm25Encoder.removeDocument(text);
+                    removedCount++;
+                } catch (Exception e) {
+                    log.warn("BM25 removeDocument 失败 | pageId={}, chunkIndex={}", pageId, removedCount, e);
+                }
+            }
+            log.debug("BM25 递减完成 | pageId={}, removed={}/{}", pageId, removedCount, chunkTexts.size());
+        }
+
+        try {
+            qdrantTemplate.deleteByPageId(COLLECTION_NAME, pageId);
+        } catch (Exception e) {
+            log.error("Qdrant 向量删除失败 | pageId={}（可能残留孤儿向量）", pageId, e);
+        }
+
+        if (bm25Encoder.getDriftCount() >= BM25_DRIFT_THRESHOLD) {
+            log.info("BM25 漂移达到阈值 (drift={}/{}), 异步触发全量重建",
+                    bm25Encoder.getDriftCount(), BM25_DRIFT_THRESHOLD);
+            Thread.startVirtualThread(() -> {
+                try {
+                    rebuildBm25Index();
+                } catch (Exception e) {
+                    log.error("BM25 自动重建失败", e);
+                }
+            });
+        }
+    }
 
     private String getCurrentUserId() {
         return String.valueOf(BaseContext.getCurrentId());
     }
 
-    /**
-     * 生成子查询：当前用户拥有的所有书本 ID
-     * 拼进主 SQL 的 inSql 条件里，权限校验零额外查询
-     */
     private String ownedBookSql(String userId) {
         return "SELECT id FROM book WHERE user_id = '" + userId + "' AND deleted = 0";
     }
 
-    /**
-     * 查单条详情时：一条 SQL 同时做"存在性检查 + 归属检查"
-     */
     private Page getByIdWithOwnershipCheck(String id) {
         String currentUserId = getCurrentUserId();
         LambdaQueryWrapper<Page> wrapper = new LambdaQueryWrapper<>();

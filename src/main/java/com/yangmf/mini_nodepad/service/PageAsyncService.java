@@ -104,6 +104,7 @@ public class PageAsyncService {
                         "userId", userId,
                         "bookId", bookId,
                         "pageId", pageId,
+                        "chunkId", chunkId,
                         "chunkIndex", i,
                         "title", title,
                         "summary", summary,

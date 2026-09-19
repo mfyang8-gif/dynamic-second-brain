@@ -23,4 +23,8 @@ public interface GeneralAssistant {
     {{it}}
     """)
     String optimizeText(String text);
+
+
+    @SystemMessage("你是一个标题生成器。根据用户的提问，生成一个简短、精准的对话标题（不超过20个字）。只输出标题文本，不加引号，不加任何标点符号。")
+    String generateTitle(String userQuestion);
 }

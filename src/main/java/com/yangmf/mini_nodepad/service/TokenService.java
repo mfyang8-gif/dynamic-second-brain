@@ -1,5 +1,6 @@
 package com.yangmf.mini_nodepad.service;
 
+import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -9,10 +10,13 @@ import java.util.concurrent.TimeUnit;
 
 @Service
 @Slf4j
+@AllArgsConstructor
 public class TokenService {
 
-    @Autowired
+
     private StringRedisTemplate stringRedisTemplate;
+
+
 
     private static final String USER_TOKEN_PREFIX = "user:token:";
     private static final String ADMIN_TOKEN_PREFIX = "admin:token:";

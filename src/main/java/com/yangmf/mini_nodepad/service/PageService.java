@@ -34,4 +34,8 @@ public interface PageService {
     String generateTitlePreview(String content);
 
     String generateSummaryPreview(String content);
+
+    void retryAiProcess(String id);
+
+    void rebuildBm25Index();
 }

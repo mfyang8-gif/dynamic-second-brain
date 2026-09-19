@@ -1,10 +1,11 @@
 package com.yangmf.mini_nodepad.utils;
 
-import com.huaban.analysis.jieba.JiebaSegmenter;
-import com.huaban.analysis.jieba.SegToken;
+import com.yangmf.mini_nodepad.encoder.Bm25SparseEncoder;
+import com.yangmf.mini_nodepad.encoder.Bm25SparseEncoder.SparseVector;
 import com.yangmf.mini_nodepad.exception.BusinessException;
-import com.yangmf.mini_nodepad.properties.QdrantProperties;
+import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.model.output.Response;
 import io.qdrant.client.QdrantClient;
 import io.qdrant.client.grpc.Common;
 import io.qdrant.client.grpc.Common.Filter;
@@ -19,8 +20,7 @@ import io.qdrant.client.grpc.Points.Vector;
 import io.qdrant.client.grpc.Points.Vectors;
 import io.qdrant.client.grpc.Points.WithPayloadSelector;
 
-import static io.qdrant.client.ConditionFactory.matchKeyword;
-import static io.qdrant.client.ConditionFactory.match;
+import static io.qdrant.client.ConditionFactory.*;
 import static io.qdrant.client.QueryFactory.nearest;
 import static io.qdrant.client.QueryFactory.rrf;
 import static io.qdrant.client.ValueFactory.value;
@@ -31,16 +31,10 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.ExecutionException;
 
-/**
- * 工业级 Qdrant 向量数据库通用模板类
- * 支持双向量 (稠密 + 稀疏) 写入与 RRF 混合检索
- */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -48,15 +42,11 @@ public class QdrantTemplate {
 
     private final EmbeddingModel embeddingModel;
     private final QdrantClient qdrantClient;
-    private final QdrantProperties qdrantProperties;
+    private final Bm25SparseEncoder bm25Encoder;
 
     private static final String DENSE_VECTOR_NAME = "";
     private static final String SPARSE_VECTOR_NAME = "sparse";
-    private static final JiebaSegmenter SEGMENTER = new JiebaSegmenter();
 
-    /**
-     * 核心方法 1：向指定的 Collection 写入数据 (包含文本的稠密向量 + 稀疏向量 + 动态 Payload)
-     */
     public void upsert(String collectionName, String pointId, String textToEmbed, String rawText, Map<String, Object> payloads) {
         if (textToEmbed == null || textToEmbed.trim().isEmpty()) {
             log.warn("写入向量库失败，文本为空. Collection: {}", collectionName);
@@ -64,13 +54,17 @@ public class QdrantTemplate {
         }
 
         try {
-            float[] denseArray = embeddingModel.embed(textToEmbed).content().vector();
+            Response<Embedding> embedResponse = embeddingModel.embed(textToEmbed);
+            if (embedResponse == null || embedResponse.content() == null) {
+                throw new BusinessException("Embedding 模型未返回有效结果");
+            }
+            float[] denseArray = embedResponse.content().vector();
             List<Float> denseVectorList = new ArrayList<>(denseArray.length);
             for (float v : denseArray) {
                 denseVectorList.add(v);
             }
 
-            SparseVectorData sparseData = generateSparseVector(textToEmbed);
+            SparseVector sparseData = bm25Encoder.encodeDocument(textToEmbed);
 
             Map<String, io.qdrant.client.grpc.JsonWithInt.Value> qdrantPayload = new HashMap<>();
             if (payloads != null) {
@@ -82,15 +76,15 @@ public class QdrantTemplate {
             qdrantPayload.put("rawText", value(rawText != null ? rawText : textToEmbed));
 
             PointStruct point = PointStruct.newBuilder()
-                    .setId(Common.PointId.newBuilder().setUuid(pointId).build())
+                    .setId(Common.PointId.newBuilder().setUuid(toQdrantUuid(pointId)).build())
                     .putAllPayload(qdrantPayload)
                     .setVectors(Vectors.newBuilder()
                             .setVectors(NamedVectors.newBuilder()
                                     .putVectors(DENSE_VECTOR_NAME, Vector.newBuilder().addAllData(denseVectorList).build())
                                     .putVectors(SPARSE_VECTOR_NAME, Vector.newBuilder()
                                             .setSparse(Points.SparseVector.newBuilder()
-                                                    .addAllIndices(sparseData.indices)
-                                                    .addAllValues(sparseData.values).build())
+                                                    .addAllIndices(sparseData.indices())
+                                                    .addAllValues(sparseData.values()).build())
                                             .build())
                                     .build())
                             .build())
@@ -99,16 +93,21 @@ public class QdrantTemplate {
             qdrantClient.upsertAsync(collectionName, Collections.singletonList(point)).get();
             log.info("成功写入向量库 [{}], PointId: {}", collectionName, pointId);
 
-        } catch (Exception e) {
+        } catch (ExecutionException e) {
             log.error("写入向量库 [{}] 失败, PointId: {}", collectionName, pointId, e);
-            //  抛出异常，让调用方（如异步线程）能够捕获并执行降级逻辑
+            throw new BusinessException("Qdrant Upsert Error", e.getCause());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("写入向量库 [{}] 被中断, PointId: {}", collectionName, pointId, e);
+            throw new BusinessException("Qdrant Upsert Error", e);
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("写入向量库 [{}] 未知异常, PointId: {}", collectionName, pointId, e);
             throw new BusinessException("Qdrant Upsert Error", e);
         }
     }
 
-    /**
-     * 核心方法 2：RRF 混合检索 (Dense + Sparse)
-     */
     public List<VectorSearchResult> search(String collectionName, String queryText, Map<String, Object> exactFilters, int limit) {
         try {
             Filter.Builder filterBuilder = Filter.newBuilder();
@@ -118,28 +117,44 @@ public class QdrantTemplate {
                         filterBuilder.addMust(matchKeyword(key, (String) val));
                     } else if (val instanceof Integer || val instanceof Long) {
                         filterBuilder.addMust(match(key, ((Number) val).longValue()));
+                    } else if (val instanceof List<?> rawList && !rawList.isEmpty()) {
+                        List<String> stringValues = rawList.stream()
+                                .map(String::valueOf)
+                                .toList();
+                        filterBuilder.addMust(matchKeywords(key, stringValues));
                     }
                 });
             }
             Filter combinedFilter = filterBuilder.build();
 
-            float[] queryDenseArray = embeddingModel.embed(queryText).content().vector();
+            Response<Embedding> embedResponse = embeddingModel.embed(queryText);
+            if (embedResponse == null || embedResponse.content() == null) {
+                throw new BusinessException("Embedding 模型未返回有效结果");
+            }
+            float[] queryDenseArray = embedResponse.content().vector();
+
+            // 【核心杀招】：在 Prefetch 阶段设置 ScoreThreshold
+            // 阿里云 V4 模型的余弦相似度阈值建议设为 0.30f ~ 0.35f
+            // 低于此值的数据连入围 RRF 排名的资格都没有，直接拒收！
             PrefetchQuery densePrefetch = PrefetchQuery.newBuilder()
                     .setQuery(nearest(io.qdrant.client.VectorInputFactory.vectorInput(queryDenseArray)))
                     .setUsing(DENSE_VECTOR_NAME)
                     .setFilter(combinedFilter)
                     .setLimit(limit * 2)
+                    .setScoreThreshold(0.30f)
                     .build();
 
-            SparseVectorData querySparseData = generateSparseVector(queryText);
+            SparseVector querySparseData = bm25Encoder.encodeQuery(queryText);
             PrefetchQuery sparsePrefetch = PrefetchQuery.newBuilder()
                     .setQuery(nearest(io.qdrant.client.grpc.Points.VectorInput.newBuilder()
                             .setSparse(Points.SparseVector.newBuilder()
-                                    .addAllIndices(querySparseData.indices)
-                                    .addAllValues(querySparseData.values).build()).build()))
+                                    .addAllIndices(querySparseData.indices())
+                                    .addAllValues(querySparseData.values()).build()).build()))
                     .setUsing(SPARSE_VECTOR_NAME)
                     .setFilter(combinedFilter)
                     .setLimit(limit * 2)
+                    // BM25 也可以设一个极小阈值，过滤掉仅匹配到一个常用字的结果
+                    .setScoreThreshold(1.0f)
                     .build();
 
             QueryPoints rrfQuery = QueryPoints.newBuilder()
@@ -155,11 +170,17 @@ public class QdrantTemplate {
 
             List<VectorSearchResult> results = new ArrayList<>();
             for (ScoredPoint point : qdrantResults) {
+                // 既然我们在 Prefetch 阶段已经把垃圾拦截了，这里只要大于 0 即可
+                if (point.getScore() <= 0.0f) {
+                    continue;
+                }
+
                 Map<String, Object> returnPayload = new HashMap<>();
                 point.getPayloadMap().forEach((k, v) -> returnPayload.put(k, extractValue(v)));
 
+                String originalChunkId = (String) returnPayload.get("chunkId");
                 results.add(VectorSearchResult.builder()
-                        .pointId(point.getId().getUuid())
+                        .pointId(originalChunkId != null ? originalChunkId : point.getId().getUuid())
                         .score(point.getScore())
                         .payload(returnPayload)
                         .rawText((String) returnPayload.get("rawText"))
@@ -167,92 +188,103 @@ public class QdrantTemplate {
             }
             return results;
 
-        } catch (Exception e) {
+        } catch (ExecutionException e) {
             log.error("Qdrant RRF 检索失败, Collection: {}", collectionName, e);
-            //  抛出异常，防止上层误以为是“没有搜到数据”
+            throw new BusinessException("Qdrant RRF Search Error", e.getCause());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("Qdrant RRF 检索被中断, Collection: {}", collectionName, e);
+            throw new BusinessException("Qdrant RRF Search Error", e);
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("Qdrant RRF 检索未知异常, Collection: {}", collectionName, e);
             throw new BusinessException("Qdrant RRF Search Error", e);
         }
     }
 
-    /**
-     * 核心方法 3：根据 Point ID 物理删除单个向量
-     */
     public void delete(String collectionName, String pointId) {
         try {
-            Common.PointId id = Common.PointId.newBuilder().setUuid(pointId).build();
+            Common.PointId id = Common.PointId.newBuilder().setUuid(toQdrantUuid(pointId)).build();
             qdrantClient.deleteAsync(collectionName, Collections.singletonList(id)).get();
             log.info("已从向量库 [{}] 删除 Point: {}", collectionName, pointId);
-        } catch (Exception e) {
+        } catch (ExecutionException e) {
             log.error("删除向量库内容失败", e);
-            //  抛出异常，确保业务事务（如 MySQL 删除）能够因一致性问题回滚或告警
+            throw new BusinessException("Qdrant Delete Error", e.getCause());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("删除向量库被中断", e);
+            throw new BusinessException("Qdrant Delete Error", e);
+        } catch (Exception e) {
+            log.error("删除向量库未知异常", e);
             throw new BusinessException("Qdrant Delete Error", e);
         }
     }
 
-    /**
-     * 核心方法 4：根据 pageId 批量删除该笔记的所有 Chunk 向量
-     */
     public void deleteByPageId(String collectionName, String pageId) {
         try {
-            String url = String.format("http://%s:%d/collections/%s/points/delete",
-                    qdrantProperties.getHost(), qdrantProperties.getHttpPort(), collectionName);
-
-            String json = String.format("""
-                    {"filter": {"must": [{"key": "pageId", "match": {"value": "%s"}}]}}
-                    """, pageId);
-
-            HttpClient client = HttpClient.newHttpClient();
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(json))
+            Filter filter = Filter.newBuilder()
+                    .addMust(matchKeyword("pageId", pageId))
                     .build();
 
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-
-            if (response.statusCode() == 200) {
-                log.info("已删除向量库 [{}] 中 pageId={} 的所有 Chunk", collectionName, pageId);
-            } else {
-                String errorMsg = String.format("删除 Chunk 响应异常, collection: %s, pageId: %s, HTTP %d - %s",
-                        collectionName, pageId, response.statusCode(), response.body());
-                log.warn(errorMsg);
-                // 🚀 HTTP 状态码非 200，说明删除失败，必须阻断流程
-                throw new RuntimeException(errorMsg);
-            }
-        } catch (Exception e) {
+            qdrantClient.deleteAsync(collectionName, filter).get();
+            log.info("已从向量库 [{}] 删除 pageId={} 的所有 Chunk", collectionName, pageId);
+        } catch (ExecutionException e) {
             log.error("批量删除 Chunk 失败, collection: {}, pageId: {}", collectionName, pageId, e);
-            // 🚀 捕获网络异常等，向上抛出
+            throw new BusinessException("Qdrant Batch Delete Error", e.getCause());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("批量删除 Chunk 被中断, collection: {}, pageId: {}", collectionName, pageId, e);
             throw new BusinessException("Qdrant Batch Delete Error", e);
+        } catch (Exception e) {
+            log.error("批量删除 Chunk 未知异常, collection: {}, pageId: {}", collectionName, pageId, e);
+            throw new BusinessException("Qdrant Batch Delete Error", e);
+        }
+    }
+
+    public List<String> fetchChunkRawTextsByPageId(String collectionName, String pageId) {
+        try {
+            QueryPoints.Builder queryBuilder = QueryPoints.newBuilder()
+                    .setCollectionName(collectionName)
+                    .setLimit(10000)
+                    .setWithPayload(WithPayloadSelector.newBuilder().setEnable(true).build());
+
+            if (pageId != null) {
+                Filter filter = Filter.newBuilder()
+                        .addMust(matchKeyword("pageId", pageId))
+                        .build();
+                queryBuilder.setFilter(filter);
+            }
+
+            List<ScoredPoint> points = qdrantClient.queryAsync(queryBuilder.build()).get();
+            List<String> rawTexts = new ArrayList<>();
+
+            for (ScoredPoint point : points) {
+                io.qdrant.client.grpc.JsonWithInt.Value val = point.getPayloadMap().get("rawText");
+                if (val != null && val.hasStringValue()) {
+                    rawTexts.add(val.getStringValue());
+                }
+            }
+
+            log.debug("Qdrant 取回 {} 个 chunk 文本 | pageId={}", rawTexts.size(), pageId != null ? pageId : "ALL");
+            return rawTexts;
+        } catch (ExecutionException e) {
+            log.error("Qdrant 查询 chunk 文本失败 | pageId={}", pageId, e);
+            throw new BusinessException("Qdrant Fetch Chunk Texts Error", e.getCause());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("Qdrant 查询 chunk 文本被中断 | pageId={}", pageId, e);
+            throw new BusinessException("Qdrant Fetch Chunk Texts Error", e);
+        } catch (Exception e) {
+            log.error("Qdrant 查询 chunk 文本未知异常 | pageId={}", pageId, e);
+            throw new BusinessException("Qdrant Fetch Chunk Texts Error", e);
         }
     }
 
     // ================= 私有辅助方法 =================
 
-
-    private SparseVectorData generateSparseVector(String text) {
-        List<Integer> indices = new ArrayList<>();
-        List<Float> values = new ArrayList<>();
-        if (text == null || text.trim().isEmpty()) {
-            return new SparseVectorData(indices, values);
-        }
-
-        List<SegToken> tokens = SEGMENTER.process(text, JiebaSegmenter.SegMode.SEARCH);
-        Map<Integer, Float> tfMap = new HashMap<>();
-
-        for (SegToken token : tokens) {
-            String word = token.word.trim();
-            if (word.isEmpty() || word.length() < 2) {
-                continue;
-            }
-            int index = word.hashCode() & 0x7fffffff;
-            tfMap.put(index, tfMap.getOrDefault(index, 0f) + 1.0f);
-        }
-
-        for (Map.Entry<Integer, Float> entry : tfMap.entrySet()) {
-            indices.add(entry.getKey());
-            values.add(entry.getValue());
-        }
-        return new SparseVectorData(indices, values);
+    private String toQdrantUuid(String semanticId) {
+        return UUID.nameUUIDFromBytes(semanticId.getBytes(StandardCharsets.UTF_8)).toString();
     }
 
     private io.qdrant.client.grpc.JsonWithInt.Value toQdrantValue(Object obj) {
@@ -294,12 +326,6 @@ public class QdrantTemplate {
             return val.getBoolValue();
         }
         return null;
-    }
-
-    @RequiredArgsConstructor
-    private static class SparseVectorData {
-        final List<Integer> indices;
-        final List<Float> values;
     }
 
     @Data

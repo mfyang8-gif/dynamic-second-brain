@@ -117,11 +117,21 @@ public class PageController {
         return Result.success(title);
     }
 
+
+
     @GetMapping("/ai/generate-summary")
     @Operation(summary = "AI预览生成简介", description = "根据正文内容生成简介，不入库")
     public Result<String> generateSummaryPreview(@RequestParam @NotBlank String content) {
         String summary = pageService.generateSummaryPreview(content);
         return Result.success(summary);
     }
+
+    @PostMapping("/{id}/retry-ai")
+    @Operation(summary = "重试 AI 处理", description = "重新触发标题/摘要生成和向量库写入，仅对失败或待处理的页面有效")
+    public Result<Void> retryAiProcess(@NotBlank(message = "知识页ID不能为空") @PathVariable String id) {
+        pageService.retryAiProcess(id);
+        return Result.success();
+    }
+
 
 }
