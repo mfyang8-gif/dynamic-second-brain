@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yangmf.mini_nodepad.aiservice.GeneralAssistant;
 import com.yangmf.mini_nodepad.aiservice.MainChatAssistant;
+import com.yangmf.mini_nodepad.enums.AiProcessStatusEnum;
 import com.yangmf.mini_nodepad.exception.BusinessException;
 import com.yangmf.mini_nodepad.exception.ForbiddenException;
 import com.yangmf.mini_nodepad.exception.MiniNotePadException;
@@ -17,8 +18,9 @@ import com.yangmf.mini_nodepad.service.ChatConfigService;
 import com.yangmf.mini_nodepad.service.ChatSessionService;
 import com.yangmf.mini_nodepad.service.PageRagRetrievalService;
 import dev.langchain4j.service.TokenStream;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
@@ -30,7 +32,6 @@ import java.util.concurrent.TimeoutException;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class ChatStreamService {
 
     private final MainChatAssistant mainChatAssistant;
@@ -43,6 +44,9 @@ public class ChatStreamService {
     private final ObjectMapper objectMapper;
     private final Executor aiTaskExecutor;
 
+    @Value("${chat.title-max-length:50}")
+    private int titleMaxLength;
+
     private static final String FIRST_SESSION_TITLE = "新对话";
 
     private static final String ERR_CODE_FORBIDDEN = "FORBIDDEN";
@@ -53,6 +57,26 @@ public class ChatStreamService {
     private static final String ERR_CODE_LLM_FAILURE = "LLM_FAILURE";
     private static final String ERR_CODE_BAD_REQUEST = "BAD_REQUEST";
     private static final String ERR_CODE_SYSTEM = "SYSTEM_ERROR";
+
+    public ChatStreamService(MainChatAssistant mainChatAssistant,
+                             PageRagRetrievalService pageRagRetrievalService,
+                             ChatConfigService chatConfigService,
+                             ChatInputGuard chatInputGuard,
+                             ChatSessionService chatSessionService,
+                             GeneralAssistant generalAssistant,
+                             PageMapper pageMapper,
+                             ObjectMapper objectMapper,
+                             @Qualifier("aiTaskExecutor") Executor aiTaskExecutor) {
+        this.mainChatAssistant = mainChatAssistant;
+        this.pageRagRetrievalService = pageRagRetrievalService;
+        this.chatConfigService = chatConfigService;
+        this.chatInputGuard = chatInputGuard;
+        this.chatSessionService = chatSessionService;
+        this.generalAssistant = generalAssistant;
+        this.pageMapper = pageMapper;
+        this.objectMapper = objectMapper;
+        this.aiTaskExecutor = aiTaskExecutor;
+    }
 
     public Flux<ChatStreamEvent> chatStream(BookChatDTO dto) {
         return Flux.create(sink -> Thread.startVirtualThread(() -> {
@@ -73,12 +97,11 @@ public class ChatStreamService {
                 String sessionId = dto.getSessionId();
                 String bookId = chatSessionService.getBookIdBySessionId(sessionId);
 
-                // 守卫：指定 pageIds 时，过滤掉未完成 AI 处理的页面
                 List<String> effectivePageIds = dto.getPageIds();
                 if (effectivePageIds != null && !effectivePageIds.isEmpty()) {
                     List<Page> pages = pageMapper.selectBatchIds(effectivePageIds);
                     List<String> unreadyPageIds = pages.stream()
-                            .filter(p -> p.getAiProcessStatus() == null || p.getAiProcessStatus() != 2)
+                            .filter(p -> p.getAiProcessStatus() == null || p.getAiProcessStatus() != AiProcessStatusEnum.SUCCESS)
                             .map(Page::getId)
                             .toList();
                     if (!unreadyPageIds.isEmpty()) {
@@ -87,7 +110,7 @@ public class ChatStreamService {
                                 "已跳过 " + unreadyPageIds.size() + " 个未完成 AI 处理的笔记"));
                     }
                     List<String> readyPageIds = pages.stream()
-                            .filter(p -> p.getAiProcessStatus() != null && p.getAiProcessStatus() == 2)
+                            .filter(p -> p.getAiProcessStatus() != null && p.getAiProcessStatus() == AiProcessStatusEnum.SUCCESS)
                             .map(Page::getId)
                             .toList();
                     if (readyPageIds.isEmpty()) {
@@ -216,7 +239,7 @@ public class ChatStreamService {
     private boolean isOverloadedError(Throwable error) {
         return walkCauses(error, e -> {
             String msg = e.getMessage();
-            if (msg == null){
+            if (msg == null) {
                 return false;
             }
             String lower = msg.toLowerCase();
@@ -262,8 +285,8 @@ public class ChatStreamService {
             if (FIRST_SESSION_TITLE.equals(session.getTitle())) {
                 String title = generalAssistant.generateTitle(userQuestion);
                 if (title != null && !title.isBlank()) {
-                    if (title.length() > 50) {
-                        title = title.substring(0, 50);
+                    if (title.length() > titleMaxLength) {
+                        title = title.substring(0, titleMaxLength);
                     }
                     chatSessionService.updateTitle(sessionId, title);
                     log.info("会话标题自动更新 | sessionId={}, title={}", sessionId, title);

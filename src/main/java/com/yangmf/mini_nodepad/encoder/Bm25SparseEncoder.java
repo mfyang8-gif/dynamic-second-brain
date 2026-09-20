@@ -3,8 +3,9 @@ package com.yangmf.mini_nodepad.encoder;
 import com.huaban.analysis.jieba.JiebaSegmenter;
 import com.huaban.analysis.jieba.SegToken;
 import jakarta.annotation.PostConstruct;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -12,12 +13,12 @@ import org.springframework.stereotype.Component;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class Bm25SparseEncoder {
 
     private static final JiebaSegmenter SEGMENTER = new JiebaSegmenter();
@@ -30,15 +31,22 @@ public class Bm25SparseEncoder {
     private static final String REDIS_TOKENS_KEY = "bm25:total:tokens";
     private static final String REDIS_DRIFT_KEY = "bm25:drift:counter";
 
-    private static final int REDIS_PIPELINE_BATCH_SIZE = 500;
+    @Value("${bm25.redis-pipeline-batch-size:500}")
+    private int redisPipelineBatchSize;
 
     private final StringRedisTemplate redisTemplate;
+    private final Executor aiTaskExecutor;
 
     private final ConcurrentHashMap<Integer, AtomicInteger> documentFrequency = new ConcurrentHashMap<>();
     private final AtomicInteger totalDocuments = new AtomicInteger(0);
     private final AtomicLong totalTokenCount = new AtomicLong(0);
     private final AtomicInteger driftCounter = new AtomicInteger(0);
 
+    public Bm25SparseEncoder(StringRedisTemplate redisTemplate,
+                             @Qualifier("aiTaskExecutor") Executor aiTaskExecutor) {
+        this.redisTemplate = redisTemplate;
+        this.aiTaskExecutor = aiTaskExecutor;
+    }
     @PostConstruct
     public void loadFromRedis() {
         try {
@@ -371,7 +379,7 @@ public class Bm25SparseEncoder {
     }
 
     private void asyncUpdateRedis(int tokensDelta, Map<String, String> dfDeltas, boolean increment) {
-        Thread.startVirtualThread(() -> {
+        aiTaskExecutor.execute(() -> {
             try {
                 redisTemplate.executePipelined((RedisCallback<Object>) connection -> {
                     byte[] keyBytes = redisTemplate.getStringSerializer().serialize(REDIS_DF_KEY);
@@ -395,14 +403,14 @@ public class Bm25SparseEncoder {
                     return null;
                 });
             } catch (DataAccessException e) {
-                log.warn("BM25 Redis {}失败 (内存统计仍准确，下次重启可恢复)",
+                log.warn("BM25 Redis {} 失败 (内存统计仍准确，下次重启可恢复)",
                         increment ? "增量更新" : "递减更新", e);
             }
         });
     }
 
     private void asyncPersistDriftCounter(int value) {
-        Thread.startVirtualThread(() -> {
+        aiTaskExecutor.execute(() -> {
             try {
                 redisTemplate.opsForValue().set(REDIS_DRIFT_KEY, String.valueOf(value));
             } catch (DataAccessException e) {
@@ -422,8 +430,8 @@ public class Bm25SparseEncoder {
         try {
             List<Map.Entry<Integer, AtomicInteger>> entries = new ArrayList<>(newDf.entrySet());
 
-            for (int i = 0; i < entries.size(); i += REDIS_PIPELINE_BATCH_SIZE) {
-                int end = Math.min(i + REDIS_PIPELINE_BATCH_SIZE, entries.size());
+            for (int i = 0; i < entries.size(); i += redisPipelineBatchSize) {
+                int end = Math.min(i + redisPipelineBatchSize, entries.size());
                 List<Map.Entry<Integer, AtomicInteger>> batch = entries.subList(i, end);
 
                 redisTemplate.executePipelined((RedisCallback<Object>) connection -> {

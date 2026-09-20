@@ -116,7 +116,48 @@ mybatis-plus:
       logic-delete-value: 1
       logic-not-delete-value: 0
 
+ai:
+  chunk:
+    size: 500
+    overlap: 50
+  retry-lock-seconds: 10
 
+# SSE 流式对话超时配置（毫秒）
+sse:
+  timeout: 300000
+
+# RAG 检索配置
+rag:
+  max-results: 5
+  min-score-threshold: 0.02
+# 输入清洗长度限制
+guard:
+  max-question-length: 2000
+  max-custom-text-length: 5000
+
+# Token 过期时间（小时）
+token:
+  expire-hours: 1
+
+# BM25 编码器配置
+bm25:
+  redis-pipeline-batch-size: 500
+  drift-threshold: 20
+
+# 会话标题最大长度
+chat:
+  title-max-length: 50
+  memory:
+    token-threshold: 1000
+    summary-check-interval: 3
+    summary-expire-days: 30
+
+# Qdrant 向量检索阈值配置
+qdrant:
+  dense:
+    score-threshold: 0.30
+  sparse:
+    score-threshold: 1.0
 
 mcp:
   server:

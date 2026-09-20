@@ -44,7 +44,7 @@ public class TextProcessManager {
         try {
             return generalAssistant.optimizeText(safeContent);
         } catch (Exception e) {
-            // 💡 架构师精髓：优雅降级 (Fallback)
+            //架构师精髓：优雅降级 (Fallback)
             // 如果大模型网络超时、欠费或者宕机，绝对不能把异常抛给前端导致入库失败！
             // 记录一条警告日志，然后默默把第一步物理清洗的结果返回，保证系统依然可用。
             log.warn("AI 文本语义清洗失败，已自动降级为物理清洗结果。文本长度: {}", safeContent.length(), e);

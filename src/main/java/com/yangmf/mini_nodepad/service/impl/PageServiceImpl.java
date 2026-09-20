@@ -1,4 +1,3 @@
-
 package com.yangmf.mini_nodepad.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -8,7 +7,9 @@ import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
 import com.yangmf.mini_nodepad.aiservice.PageAssistant;
 import com.yangmf.mini_nodepad.context.BaseContext;
+import com.yangmf.mini_nodepad.converter.PageConverter;
 import com.yangmf.mini_nodepad.encoder.Bm25SparseEncoder;
+import com.yangmf.mini_nodepad.enums.AiProcessStatusEnum;
 import com.yangmf.mini_nodepad.enums.SourceTypeEnum;
 import com.yangmf.mini_nodepad.exception.BusinessException;
 import com.yangmf.mini_nodepad.exception.ForbiddenException;
@@ -18,22 +19,25 @@ import com.yangmf.mini_nodepad.pojo.dto.PageIngestDTO;
 import com.yangmf.mini_nodepad.pojo.dto.PageQueryDTO;
 import com.yangmf.mini_nodepad.pojo.entity.Page;
 import com.yangmf.mini_nodepad.pojo.vo.PageVO;
+import com.yangmf.mini_nodepad.result.BatchOperationResult;
 import com.yangmf.mini_nodepad.result.PageResult;
 import com.yangmf.mini_nodepad.service.PageAsyncService;
 import com.yangmf.mini_nodepad.service.PageService;
 import com.yangmf.mini_nodepad.utils.QdrantTemplate;
 import com.yangmf.mini_nodepad.utils.TextProcessManager;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.BeanUtils;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements PageService {
 
     private final PageMapper pageMapper;
@@ -42,13 +46,42 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
     private final TextProcessManager textCleaner;
     private final QdrantTemplate qdrantTemplate;
     private final Bm25SparseEncoder bm25Encoder;
+    private final Executor aiTaskExecutor;
+    private final StringRedisTemplate stringRedisTemplate;
+    private final PageConverter pageConverter;
+
+    @Value("${bm25.drift-threshold:20}")
+    private int bm25DriftThreshold;
+
+    @Value("${ai.retry-lock-seconds:10}")
+    private int aiRetryLockSeconds;
 
     private static final String COLLECTION_NAME = "dynamic_brain";
 
-    /**
-     * BM25 漂移阈值：累计移除的文档数达到此值后，自动触发全量重建
-     */
-    private static final int BM25_DRIFT_THRESHOLD = 20;
+    private static final String OWNED_BOOK_SUB_QUERY =
+            "book_id IN (SELECT id FROM book WHERE user_id = {0} AND deleted = 0)";
+
+    private static final String AI_RETRY_LOCK_PREFIX = "ai:retry:lock:";
+
+    public PageServiceImpl(PageMapper pageMapper,
+                           PageAssistant pageAssistant,
+                           PageAsyncService pageAsyncService,
+                           TextProcessManager textCleaner,
+                           QdrantTemplate qdrantTemplate,
+                           Bm25SparseEncoder bm25Encoder,
+                           @Qualifier("aiTaskExecutor") Executor aiTaskExecutor,
+                           StringRedisTemplate stringRedisTemplate,
+                           PageConverter pageConverter) {
+        this.pageMapper = pageMapper;
+        this.pageAssistant = pageAssistant;
+        this.pageAsyncService = pageAsyncService;
+        this.textCleaner = textCleaner;
+        this.qdrantTemplate = qdrantTemplate;
+        this.bm25Encoder = bm25Encoder;
+        this.aiTaskExecutor = aiTaskExecutor;
+        this.stringRedisTemplate = stringRedisTemplate;
+        this.pageConverter = pageConverter;
+    }
 
     @Override
     public void ingestPage(PageIngestDTO dto) {
@@ -56,8 +89,7 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
 
         String fastCleanText = textCleaner.physicalClean(dto.getContent());
 
-        Page page = new Page();
-        BeanUtils.copyProperties(dto, page);
+        Page page = pageConverter.toEntity(dto);
         page.setContent(fastCleanText);
 
         if (dto.getSourceType() != null) {
@@ -69,10 +101,10 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
         }
 
         boolean needAiProcess = Integer.valueOf(1).equals(dto.getAutoOptimize());
-        page.setAiProcessStatus(needAiProcess ? 1 : 0);
+        page.setAiProcessStatus(needAiProcess ? AiProcessStatusEnum.PROCESSING : AiProcessStatusEnum.PENDING);
 
         this.save(page);
-        log.info("知识页初次录入成功，ID: {}, bookId: {}, aiStatus: {}",
+        log.info("知识页初次录入成功 | pageId={}, bookId={}, aiStatus={}",
                 page.getId(), page.getBookId(), page.getAiProcessStatus());
 
         if (needAiProcess) {
@@ -83,7 +115,7 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
     @Override
     public PageVO getPageById(String id) {
         Page page = getByIdWithOwnershipCheck(id);
-        return convertToVO(page);
+        return pageConverter.toVO(page);
     }
 
     @Override
@@ -94,14 +126,14 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
 
         LambdaQueryWrapper<Page> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(Page::getBookId, bookId)
-                .inSql(Page::getBookId, ownedBookSql(currentUserId))
+                .apply(OWNED_BOOK_SUB_QUERY, currentUserId)
                 .orderByDesc(Page::getCreatedAt);
         List<Page> pageList = this.list(wrapper);
 
         PageInfo<Page> pageInfo = new PageInfo<>(pageList);
 
         List<PageVO> voList = pageInfo.getList().stream()
-                .map(this::convertToVO)
+                .map(pageConverter::toVO)
                 .toList();
 
         return PageResult.<PageVO>builder()
@@ -117,31 +149,29 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
         String currentUserId = getCurrentUserId();
         LambdaUpdateWrapper<Page> wrapper = new LambdaUpdateWrapper<>();
         wrapper.eq(Page::getId, id)
-                .inSql(Page::getBookId, ownedBookSql(currentUserId))
+                .apply(OWNED_BOOK_SUB_QUERY, currentUserId)
                 .set(Page::getDeleted, 1)
                 .set(Page::getDeletedAt, LocalDateTime.now());
         if (!this.update(wrapper)) {
             throw new ForbiddenException("无权操作该知识页");
         }
-        log.info("知识页已移入回收站，ID: {}", id);
+        log.info("知识页已移入回收站 | pageId={}, userId={}", id, currentUserId);
     }
 
     @Override
-    public void softDeletePages(List<String> ids) {
+    public BatchOperationResult softDeletePages(List<String> ids) {
         String currentUserId = getCurrentUserId();
         LambdaUpdateWrapper<Page> wrapper = new LambdaUpdateWrapper<>();
         wrapper.in(Page::getId, ids)
-                .inSql(Page::getBookId, ownedBookSql(currentUserId))
+                .apply(OWNED_BOOK_SUB_QUERY, currentUserId)
                 .set(Page::getDeleted, 1)
                 .set(Page::getDeletedAt, LocalDateTime.now());
         int affected = pageMapper.update(null, wrapper);
         if (affected == 0) {
             throw new ForbiddenException("无权操作这些知识页");
         }
-        if (affected < ids.size()) {
-            log.warn("批量软删除部分跳过，请求: {} 条，实际: {} 条，userId: {}", ids.size(), affected, currentUserId);
-        }
-        log.info("批量移入回收站，userId: {}, 成功: {} 条", currentUserId, affected);
+        log.info("批量移入回收站 | userId={}, requested={}, succeeded={}", currentUserId, ids.size(), affected);
+        return BatchOperationResult.of(ids.size(), affected);
     }
 
     @Override
@@ -153,11 +183,11 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
         if (pageMapper.permanentDeleteById(id, currentUserId) == 0) {
             throw new ForbiddenException("无权操作该知识页");
         }
-        log.info("知识页已永久删除 | pageId={}, userId={}（Qdrant + BM25 已清理）", id, currentUserId);
+        log.info("知识页已永久删除 | pageId={}, userId={}", id, currentUserId);
     }
 
     @Override
-    public void permanentDeletePages(List<String> ids) {
+    public BatchOperationResult permanentDeletePages(List<String> ids) {
         String currentUserId = getCurrentUserId();
 
         for (String pageId : ids) {
@@ -168,10 +198,8 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
         if (affected == 0) {
             throw new ForbiddenException("无权操作这些知识页");
         }
-        if (affected < ids.size()) {
-            log.warn("批量永久删除部分跳过 | 请求: {} 条，实际: {} 条，userId: {}", ids.size(), affected, currentUserId);
-        }
-        log.info("批量永久删除完成 | userId: {}, 成功: {} 条（Qdrant + BM25 已清理）", currentUserId, affected);
+        log.info("批量永久删除完成 | userId={}, requested={}, succeeded={}", currentUserId, ids.size(), affected);
+        return BatchOperationResult.of(ids.size(), affected);
     }
 
     @Override
@@ -180,20 +208,18 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
         if (pageMapper.restoreById(id, currentUserId) == 0) {
             throw new ForbiddenException("无权操作该知识页");
         }
-        log.info("知识页已从回收站恢复，ID: {}", id);
+        log.info("知识页已从回收站恢复 | pageId={}, userId={}", id, currentUserId);
     }
 
     @Override
-    public void restorePages(List<String> ids) {
+    public BatchOperationResult restorePages(List<String> ids) {
         String currentUserId = getCurrentUserId();
         int affected = pageMapper.batchRestoreByIds(ids, currentUserId);
         if (affected == 0) {
             throw new ForbiddenException("无权操作这些知识页");
         }
-        if (affected < ids.size()) {
-            log.warn("批量恢复部分跳过，请求: {} 条，实际: {} 条，userId: {}", ids.size(), affected, currentUserId);
-        }
-        log.info("批量恢复，userId: {}, 成功: {} 条", currentUserId, affected);
+        log.info("批量恢复完成 | userId={}, requested={}, succeeded={}", currentUserId, ids.size(), affected);
+        return BatchOperationResult.of(ids.size(), affected);
     }
 
     @Override
@@ -207,7 +233,7 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
         PageInfo<Page> pageInfo = new PageInfo<>(pageList);
 
         List<PageVO> voList = pageInfo.getList().stream()
-                .map(this::convertToVO)
+                .map(pageConverter::toVO)
                 .toList();
 
         return PageResult.<PageVO>builder()
@@ -230,11 +256,11 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
         }
 
         int count = pageMapper.permanentDeleteRecycleBin(currentUserId);
-        log.info("回收站已清空 | userId: {}, 共永久删除 {} 条（Qdrant + BM25 已清理）", currentUserId, count);
+        log.info("回收站已清空 | userId={}, deletedCount={}", currentUserId, count);
 
         if (count > 0) {
-            log.info("清空回收站后，异步触发 BM25 全量重建");
-            Thread.startVirtualThread(() -> {
+            log.info("清空回收站后异步触发 BM25 全量重建");
+            aiTaskExecutor.execute(() -> {
                 try {
                     bm25Encoder.resetDriftCounter();
                     rebuildBm25Index();
@@ -266,7 +292,7 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
         try {
             bm25Encoder.rebuildFromChunks(allRawTexts);
         } catch (Exception e) {
-            log.error("BM25 重建失败：编码器处理异常 (chunkCount={})", allRawTexts.size(), e);
+            log.error("BM25 重建失败：编码器处理异常 | chunkCount={}", allRawTexts.size(), e);
             throw new BusinessException("BM25 重建失败：编码器处理异常", e);
         }
 
@@ -282,7 +308,7 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
 
         String safeContent = content.length() > 10000 ? content.substring(0, 10000) : content;
 
-        log.info("用户 [{}] 触发 AI 标题预览，文本长度: {}", getCurrentUserId(), safeContent.length());
+        log.info("触发 AI 标题预览 | userId={}, textLength={}", getCurrentUserId(), safeContent.length());
 
         try {
             return pageAssistant.generateTitle(safeContent);
@@ -311,39 +337,50 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
     @Override
     public void retryAiProcess(String id) {
         String currentUserId = getCurrentUserId();
-        Page page = getByIdWithOwnershipCheck(id);
+        String lockKey = AI_RETRY_LOCK_PREFIX + id;
 
-        Integer status = page.getAiProcessStatus();
-        if (status != null && status == 2) {
-            throw new BusinessException("该知识页已处理成功，无需重试");
-        }
-        if (status != null && status == 1) {
+        Boolean locked = stringRedisTemplate.opsForValue()
+                .setIfAbsent(lockKey, "1", aiRetryLockSeconds, TimeUnit.SECONDS);
+        if (locked == null || !locked) {
             throw new BusinessException("该知识页正在处理中，请勿重复提交");
         }
 
-        page.setAiProcessStatus(1);
-        page.setAiProcessMsg("重试中...");
-        page.setUpdatedAt(LocalDateTime.now());
-        pageMapper.updateById(page);
+        try {
+            Page page = getByIdWithOwnershipCheck(id);
 
-        log.info("知识页 AI 重试触发 | pageId={}, userId={}", id, currentUserId);
-        pageAsyncService.processAiIngest(id, page.getContent(), page.getBookId(), currentUserId);
+            AiProcessStatusEnum status = page.getAiProcessStatus();
+            if (status == AiProcessStatusEnum.SUCCESS) {
+                throw new BusinessException("该知识页已处理成功，无需重试");
+            }
+            if (status == AiProcessStatusEnum.PROCESSING) {
+                throw new BusinessException("该知识页正在处理中，请勿重复提交");
+            }
+
+            page.setAiProcessStatus(AiProcessStatusEnum.PROCESSING);
+            page.setAiProcessMsg("重试中...");
+            page.setUpdatedAt(LocalDateTime.now());
+            pageMapper.updateById(page);
+
+            log.info("知识页 AI 重试触发 | pageId={}, userId={}", id, currentUserId);
+            pageAsyncService.processAiIngest(id, page.getContent(), page.getBookId(), currentUserId);
+        } finally {
+            try {
+                stringRedisTemplate.delete(lockKey);
+            } catch (Exception e) {
+                log.warn("AI 重试锁释放失败 | lockKey={}", lockKey, e);
+            }
+        }
     }
 
     // ==================== 私有方法 ====================
 
-    /**
-     * 清理单个 pageId 的 Qdrant 向量 + BM25 统计（best-effort，失败不阻断主流程）
-     * 执行顺序：① 取回 chunk 文本 → ② 递减 BM25 → ③ 删除 Qdrant 向量
-     * 如果 BM25 漂移达到阈值，自动异步触发全量重建
-     */
     private void cleanupQdrantAndBm25(String pageId) {
         List<String> chunkTexts = List.of();
 
         try {
             chunkTexts = qdrantTemplate.fetchChunkRawTextsByPageId(COLLECTION_NAME, pageId);
         } catch (Exception e) {
-            log.warn("BM25 递减前置失败：无法取回 chunk 文本 | pageId={}，BM25 统计将产生漂移", pageId, e);
+            log.warn("BM25 递减前置失败 | pageId={}, msg=BM25 统计将产生漂移", pageId, e);
         }
 
         if (!chunkTexts.isEmpty()) {
@@ -356,19 +393,19 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
                     log.warn("BM25 removeDocument 失败 | pageId={}, chunkIndex={}", pageId, removedCount, e);
                 }
             }
-            log.debug("BM25 递减完成 | pageId={}, removed={}/{}", pageId, removedCount, chunkTexts.size());
+            log.debug("BM25 递减完成 | pageId={}, removed={}, total={}", pageId, removedCount, chunkTexts.size());
         }
 
         try {
             qdrantTemplate.deleteByPageId(COLLECTION_NAME, pageId);
         } catch (Exception e) {
-            log.error("Qdrant 向量删除失败 | pageId={}（可能残留孤儿向量）", pageId, e);
+            log.error("Qdrant 向量删除失败 | pageId={}", pageId, e);
         }
 
-        if (bm25Encoder.getDriftCount() >= BM25_DRIFT_THRESHOLD) {
-            log.info("BM25 漂移达到阈值 (drift={}/{}), 异步触发全量重建",
-                    bm25Encoder.getDriftCount(), BM25_DRIFT_THRESHOLD);
-            Thread.startVirtualThread(() -> {
+        if (bm25Encoder.getDriftCount() >= bm25DriftThreshold) {
+            log.info("BM25 漂移达到阈值 | drift={}, threshold={}，异步触发全量重建",
+                    bm25Encoder.getDriftCount(), bm25DriftThreshold);
+            aiTaskExecutor.execute(() -> {
                 try {
                     rebuildBm25Index();
                 } catch (Exception e) {
@@ -382,28 +419,15 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
         return String.valueOf(BaseContext.getCurrentId());
     }
 
-    private String ownedBookSql(String userId) {
-        return "SELECT id FROM book WHERE user_id = '" + userId + "' AND deleted = 0";
-    }
-
     private Page getByIdWithOwnershipCheck(String id) {
         String currentUserId = getCurrentUserId();
         LambdaQueryWrapper<Page> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(Page::getId, id)
-                .inSql(Page::getBookId, ownedBookSql(currentUserId));
+                .apply(OWNED_BOOK_SUB_QUERY, currentUserId);
         Page page = this.getOne(wrapper);
         if (page == null) {
             throw new ForbiddenException("无权访问该知识页");
         }
         return page;
-    }
-
-    private PageVO convertToVO(Page page) {
-        PageVO vo = new PageVO();
-        BeanUtils.copyProperties(page, vo);
-        if (page.getSourceType() != null) {
-            vo.setSourceType(page.getSourceType().name());
-        }
-        return vo;
     }
 }

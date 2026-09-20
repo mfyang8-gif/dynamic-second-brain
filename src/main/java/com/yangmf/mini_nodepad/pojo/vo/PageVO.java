@@ -45,7 +45,8 @@ public class PageVO {
     @Schema(description = "删除时间（仅回收站数据有值）")
     private LocalDateTime deletedAt;
 
-    @Schema(description = "AI处理状态: 0-待处理/不处理, 1-处理中, 2-成功, 3-失败")
+
+    @Schema(description = "AI处理状态: 0-待处理/不处理, 1-处理中, 2-成功, 3-失败, 4-部分成功(降级)")
     private Integer aiProcessStatus;
 
     @Schema(description = "AI处理结果/失败原因日志")

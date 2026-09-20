@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
 import com.yangmf.mini_nodepad.context.BaseContext;
+import com.yangmf.mini_nodepad.converter.BookConverter;
 import com.yangmf.mini_nodepad.exception.ForbiddenException;
 import com.yangmf.mini_nodepad.mapper.BookMapper;
 import com.yangmf.mini_nodepad.mapper.PageMapper;
@@ -15,11 +16,11 @@ import com.yangmf.mini_nodepad.pojo.dto.PageQueryDTO;
 import com.yangmf.mini_nodepad.pojo.entity.Book;
 import com.yangmf.mini_nodepad.pojo.entity.Page;
 import com.yangmf.mini_nodepad.pojo.vo.BookVO;
+import com.yangmf.mini_nodepad.result.BatchOperationResult;
 import com.yangmf.mini_nodepad.result.PageResult;
 import com.yangmf.mini_nodepad.service.BookService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -33,21 +34,19 @@ public class BookServiceImpl extends ServiceImpl<BookMapper, Book> implements Bo
 
     private final BookMapper bookMapper;
     private final PageMapper pageMapper;
-
+    private final BookConverter bookConverter;
 
     @Override
     public String createBook(BookCreateDTO dto) {
         String currentUserId = getCurrentUserId();
-        Book book = new Book();
+        Book book = bookConverter.toEntity(dto);
         book.setId(UUID.randomUUID().toString().replace("-", ""));
-        BeanUtils.copyProperties(dto, book);
         book.setUserId(currentUserId);
         this.save(book);
-        log.info("知识库创建成功，ID: {}, userId: {}", book.getId(), currentUserId);
+        log.info("知识库创建成功 | bookId={}, userId={}", book.getId(), currentUserId);
         return book.getId();
     }
 
-    //TODO:是否公开，如果公开，则不需要鉴权--后期做，开始做大厅的时候
     @Override
     public BookVO getBookById(String id) {
         Book book = getByIdWithOwnershipCheck(id);
@@ -57,9 +56,8 @@ public class BookServiceImpl extends ServiceImpl<BookMapper, Book> implements Bo
 
     @Override
     public PageResult<BookVO> listMyBooks(PageQueryDTO queryDTO) {
-
         String currentUserId = getCurrentUserId();
-        log.debug("queryDTO: {}", queryDTO);
+        log.debug("分页查询知识库 | queryDTO={}", queryDTO);
         PageHelper.startPage(queryDTO.getPage(), queryDTO.getPageSize());
 
         LambdaQueryWrapper<Book> wrapper = new LambdaQueryWrapper<>();
@@ -102,7 +100,7 @@ public class BookServiceImpl extends ServiceImpl<BookMapper, Book> implements Bo
         if (!this.update(wrapper)) {
             throw new ForbiddenException("无权操作该知识库");
         }
-        log.info("知识库更新成功，ID: {}", id);
+        log.info("知识库更新成功 | bookId={}, userId={}", id, currentUserId);
     }
 
     @Override
@@ -117,11 +115,11 @@ public class BookServiceImpl extends ServiceImpl<BookMapper, Book> implements Bo
         if (!this.update(wrapper)) {
             throw new ForbiddenException("无权操作该知识库");
         }
-        log.info("知识库已删除，ID: {}", id);
+        log.info("知识库已删除 | bookId={}, userId={}", id, currentUserId);
     }
 
     @Override
-    public void deleteBooks(List<String> ids) {
+    public BatchOperationResult deleteBooks(List<String> ids) {
         String currentUserId = getCurrentUserId();
 
         LambdaUpdateWrapper<Book> wrapper = new LambdaUpdateWrapper<>();
@@ -133,14 +131,9 @@ public class BookServiceImpl extends ServiceImpl<BookMapper, Book> implements Bo
         if (affected == 0) {
             throw new ForbiddenException("无权操作这些知识库");
         }
-        if (affected < ids.size()) {
-            log.warn("批量删除知识库部分跳过，请求: {} 条，实际: {} 条，userId: {}", ids.size(), affected, currentUserId);
-        }
-        log.info("批量删除知识库，userId: {}, 成功: {} 条", currentUserId, affected);
+        log.info("批量删除知识库 | userId={}, 请求: {} 条, 成功: {} 条", currentUserId, ids.size(), affected);
+        return BatchOperationResult.of(ids.size(), affected);
     }
-
-
-    //TODO:做根据书页内容自动生成description的功能
 
     // ==================== 私有方法 ====================
 
@@ -149,9 +142,8 @@ public class BookServiceImpl extends ServiceImpl<BookMapper, Book> implements Bo
     }
 
     private Book getByIdWithOwnershipCheck(String id) {
-
         String currentUserId = getCurrentUserId();
-        log.debug("currentUserId: {}", currentUserId);
+        log.debug("知识库归属校验 | bookId={}, userId={}", id, currentUserId);
         LambdaQueryWrapper<Book> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(Book::getId, id)
                 .eq(Book::getUserId, currentUserId);

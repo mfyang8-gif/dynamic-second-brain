@@ -23,7 +23,10 @@ public class ChatMemoryProviderConfig {
             OpenAiChatModel chatModel,
             StringRedisTemplate stringRedisTemplate,
             @Value("${spring.data.redis.host:localhost}") String redisHost,
-            @Value("${spring.data.redis.port:6380}") int redisPort) {
+            @Value("${spring.data.redis.port:6380}") int redisPort,
+            @Value("${chat.memory.token-threshold:1000}") int tokenThreshold,
+            @Value("${chat.memory.summary-check-interval:3}") int summaryCheckInterval,
+            @Value("${chat.memory.summary-expire-days:30}") long summaryExpireDays) {
 
         ChatMemoryProvider baseProvider = memoryId -> MessageWindowChatMemory.builder()
                 .chatMemoryStore(RedisChatMemoryStore.builder()
@@ -34,7 +37,7 @@ public class ChatMemoryProviderConfig {
                 .maxMessages(20)
                 .build();
 
-        // 完美传入 4 个参数，没有任何产生 NullPointerException 的机会
-        return new SummarizingChatMemoryProvider(baseProvider, summarizer, chatModel, stringRedisTemplate);
+        return new SummarizingChatMemoryProvider(baseProvider, summarizer, chatModel, stringRedisTemplate,
+                tokenThreshold, summaryCheckInterval, summaryExpireDays);
     }
 }

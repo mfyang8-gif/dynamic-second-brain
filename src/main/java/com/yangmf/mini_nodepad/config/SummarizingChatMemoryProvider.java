@@ -8,10 +8,10 @@ import dev.langchain4j.memory.chat.ChatMemoryProvider;
 import dev.langchain4j.model.chat.ChatModel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
+
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-
 
 @Slf4j
 public class SummarizingChatMemoryProvider implements ChatMemoryProvider {
@@ -19,25 +19,30 @@ public class SummarizingChatMemoryProvider implements ChatMemoryProvider {
     private final ChatMemoryProvider delegateProvider;
     private final ContextSummarizer summarizer;
     private final ChatModel chatModel;
+    private final StringRedisTemplate stringRedisTemplate;
 
-
-    private  final StringRedisTemplate stringRedisTemplate;
-
-    private static final int TOKEN_THRESHOLD = 1000;
-    private static final int SUMMARY_CHECK_INTERVAL = 3;
     private static final String SUMMARY_KEY_PREFIX = "chat:summary:";
     private static final String MESSAGE_COUNT_KEY_PREFIX = "chat:msgcount:";
-    private static final long SUMMARY_EXPIRE_DAYS = 30;
+
+    private final int tokenThreshold;
+    private final int summaryCheckInterval;
+    private final long summaryExpireDays;
 
     public SummarizingChatMemoryProvider(
             ChatMemoryProvider delegateProvider,
             ContextSummarizer summarizer,
             ChatModel chatModel,
-            StringRedisTemplate stringRedisTemplate) {
+            StringRedisTemplate stringRedisTemplate,
+            int tokenThreshold,
+            int summaryCheckInterval,
+            long summaryExpireDays) {
         this.delegateProvider = delegateProvider;
         this.stringRedisTemplate = stringRedisTemplate;
         this.summarizer = summarizer;
         this.chatModel = chatModel;
+        this.tokenThreshold = tokenThreshold;
+        this.summaryCheckInterval = summaryCheckInterval;
+        this.summaryExpireDays = summaryExpireDays;
     }
 
     @Override
@@ -61,7 +66,7 @@ public class SummarizingChatMemoryProvider implements ChatMemoryProvider {
             incrementMessageCount();
 
             int count = getMessageCount();
-            if (count % SUMMARY_CHECK_INTERVAL == 0) {
+            if (count % summaryCheckInterval == 0) {
                 checkAndSummarize();
             }
         }
@@ -101,12 +106,14 @@ public class SummarizingChatMemoryProvider implements ChatMemoryProvider {
         private void checkAndSummarize() {
             try {
                 List<ChatMessage> messages = delegate.messages();
-                if (messages.size() < 6) {return;
+                if (messages.size() < 6) {
+                    return;
                 }
 
                 int estimatedTokens = estimateTokens(messages);
-                if (estimatedTokens > TOKEN_THRESHOLD) {
-                    log.info("Token 数量 {} 超过阈值 {}，开始总结，memoryId={}", estimatedTokens, TOKEN_THRESHOLD, memoryId);
+                if (estimatedTokens > tokenThreshold) {
+                    log.info("Token 超过阈值，开始总结 | estimated={}, threshold={}, memoryId={}",
+                            estimatedTokens, tokenThreshold, memoryId);
                     String conversationText = convertMessagesToText(messages);
                     String summary = summarizer.summarize(conversationText);
 
@@ -125,18 +132,18 @@ public class SummarizingChatMemoryProvider implements ChatMemoryProvider {
                         for (int i = 0; i < messagesToKeep; i++) {
                             incrementMessageCount();
                         }
-                        log.info("总结完成，memoryId={}, 总结长度={}", memoryId, summary.length());
+                        log.info("总结完成 | memoryId={}, summaryLength={}", memoryId, summary.length());
                     }
                 }
             } catch (Exception e) {
-                log.error("总结失败，memoryId={}", memoryId, e);
+                log.error("总结失败 | memoryId={}", memoryId, e);
             }
         }
 
         private void incrementMessageCount() {
             String key = MESSAGE_COUNT_KEY_PREFIX + memoryId.toString();
             stringRedisTemplate.opsForValue().increment(key);
-            stringRedisTemplate.expire(key, Duration.ofDays(SUMMARY_EXPIRE_DAYS));
+            stringRedisTemplate.expire(key, Duration.ofDays(summaryExpireDays));
         }
 
         private int getMessageCount() {
@@ -151,7 +158,7 @@ public class SummarizingChatMemoryProvider implements ChatMemoryProvider {
 
         private void saveSummary(String summary) {
             String key = SUMMARY_KEY_PREFIX + memoryId.toString();
-            stringRedisTemplate.opsForValue().set(key, summary, Duration.ofDays(SUMMARY_EXPIRE_DAYS));
+            stringRedisTemplate.opsForValue().set(key, summary, Duration.ofDays(summaryExpireDays));
         }
 
         private String getSummary() {

@@ -8,6 +8,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -15,16 +16,23 @@ import java.util.stream.Collectors;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class PageRagRetrievalService {
 
     private final QdrantTemplate qdrantTemplate;
     private final QdrantProperties qdrantProperties;
 
     private static final String DEFAULT_COLLECTION_NAME = "dynamic_brain";
-    private static final int DEFAULT_MAX_RESULTS = 5;
-    // 最小匹配分数：配合 Qdrant 内部的标准 RRF (K=60)，0.02 是一个合理的噪音过滤线
-    private static final float MIN_SCORE_THRESHOLD = 0.02f;
+
+    @Value("${rag.max-results:5}")
+    private int maxResults;
+
+    @Value("${rag.min-score-threshold:0.02}")
+    private float minScoreThreshold;
+
+    public PageRagRetrievalService(QdrantTemplate qdrantTemplate, QdrantProperties qdrantProperties) {
+        this.qdrantTemplate = qdrantTemplate;
+        this.qdrantProperties = qdrantProperties;
+    }
 
     public List<RagChunk> retrieveChunks(String userQuery, String bookId,
                                          List<String> pageIds, int maxResults) {
@@ -71,7 +79,7 @@ public class PageRagRetrievalService {
         int displayIndex = 1;
 
         for (VectorSearchResult hit : searchResults) {
-            if (hit.getScore() < MIN_SCORE_THRESHOLD) {
+            if (hit.getScore() < minScoreThreshold) {
                 continue;
             }
 
@@ -98,11 +106,11 @@ public class PageRagRetrievalService {
     }
 
     public List<RagChunk> retrieveChunks(String userQuery, String bookId, List<String> pageIds) {
-        return retrieveChunks(userQuery, bookId, pageIds, DEFAULT_MAX_RESULTS);
+        return retrieveChunks(userQuery, bookId, pageIds, maxResults);
     }
 
     public List<RagChunk> retrieveChunks(String userQuery, String bookId) {
-        return retrieveChunks(userQuery, bookId, null, DEFAULT_MAX_RESULTS);
+        return retrieveChunks(userQuery, bookId, null, maxResults);
     }
 
     public String buildContextString(List<RagChunk> chunks) {
@@ -111,7 +119,7 @@ public class PageRagRetrievalService {
         }
 
         StringBuilder sb = new StringBuilder();
-        sb.append("【重要指令】请严格基于以下提供的参考切片回答用户问题。如果参考切片的内容与用户的问题完全不相关（例如知识库是关于心理学，而用户问的是红烧肉做法），请直接回答：“知识库中未找到与您问题相关的信息”，严禁自行编造或强行关联。\n\n");
+        sb.append("【重要指令】请严格基于以下提供的参考切片回答用户问题。如果参考切片的内容与用户的问题完全不相关（例如知识库是关于心理学，而用户问的是红烧肉做法），请直接回答：‘知识库中未找到与您问题相关的信息’，严禁自行编造或强行关联。\n\n");
 
         for (RagChunk chunk : chunks) {
             sb.append("### 来源 [").append(chunk.getDisplayIndex()).append("] ");

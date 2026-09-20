@@ -3,7 +3,6 @@ package com.yangmf.mini_nodepad.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.yangmf.mini_nodepad.context.BaseContext;
 import com.yangmf.mini_nodepad.exception.ForbiddenException;
-import com.yangmf.mini_nodepad.exception.ResourceNotFoundException;
 import com.yangmf.mini_nodepad.mapper.ChatMessageMapper;
 import com.yangmf.mini_nodepad.mapper.ChatSessionMapper;
 import com.yangmf.mini_nodepad.pojo.dto.SessionCreateDTO;
@@ -28,6 +27,9 @@ public class ChatSessionServiceImpl implements ChatSessionService {
     private final ChatMessageMapper chatMessageMapper;
     private final BookService bookService;
 
+    private static final String OWNED_BOOK_SUB_QUERY =
+            "book_id IN (SELECT id FROM book WHERE user_id = {0} AND deleted = 0)";
+
     @Override
     public String createSession(SessionCreateDTO dto) {
         String currentUserId = getCurrentUserId();
@@ -50,7 +52,7 @@ public class ChatSessionServiceImpl implements ChatSessionService {
         List<ChatSession> sessions = chatSessionMapper.selectList(
                 new LambdaQueryWrapper<ChatSession>()
                         .eq(ChatSession::getBookId, bookId)
-                        .inSql(ChatSession::getBookId, ownedBookSql(currentUserId))
+                        .apply(OWNED_BOOK_SUB_QUERY, currentUserId)
                         .orderByDesc(ChatSession::getUpdatedAt)
         );
 
@@ -107,15 +109,11 @@ public class ChatSessionServiceImpl implements ChatSessionService {
         return String.valueOf(BaseContext.getCurrentId());
     }
 
-    private String ownedBookSql(String userId) {
-        return "SELECT id FROM book WHERE user_id = '" + userId + "' AND deleted = 0";
-    }
-
     private ChatSession getByIdWithOwnershipCheck(String sessionId) {
         String currentUserId = getCurrentUserId();
         LambdaQueryWrapper<ChatSession> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(ChatSession::getId, sessionId)
-                .inSql(ChatSession::getBookId, ownedBookSql(currentUserId));
+                .apply(OWNED_BOOK_SUB_QUERY, currentUserId);
         ChatSession session = chatSessionMapper.selectOne(wrapper);
         if (session == null) {
             throw new ForbiddenException("无权访问该对话会话");

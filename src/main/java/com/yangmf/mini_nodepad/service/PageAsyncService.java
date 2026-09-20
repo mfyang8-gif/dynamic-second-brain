@@ -2,6 +2,7 @@ package com.yangmf.mini_nodepad.service;
 
 import com.yangmf.mini_nodepad.aiservice.PageAssistant;
 import com.yangmf.mini_nodepad.config.ThreadPoolConfig;
+import com.yangmf.mini_nodepad.enums.AiProcessStatusEnum;
 import com.yangmf.mini_nodepad.mapper.PageMapper;
 import com.yangmf.mini_nodepad.pojo.entity.Page;
 import com.yangmf.mini_nodepad.utils.QdrantTemplate;
@@ -11,6 +12,7 @@ import dev.langchain4j.data.document.splitter.DocumentSplitters;
 import dev.langchain4j.data.segment.TextSegment;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -31,127 +33,155 @@ public class PageAsyncService {
 
     private static final String COLLECTION_NAME = "dynamic_brain";
 
-    private static final int CHUNK_SIZE = 500;
-    private static final int CHUNK_OVERLAP = 50;
+    @Value("${ai.chunk.size:500}")
+    private int chunkSize;
+
+    @Value("${ai.chunk.overlap:50}")
+    private int chunkOverlap;
 
     @Async(ThreadPoolConfig.AI_TASK_EXECUTOR)
     public void processAiIngest(String pageId, String cleanedText, String bookId, String userId) {
-        log.info(" [异步线程开启] 开始处理笔记 pageId: {}", pageId);
+        log.info("AI 异步处理开始 | pageId={}, userId={}", pageId, userId);
 
-        int finalStatus = 2;
+        AiProcessStatusEnum finalStatus = AiProcessStatusEnum.SUCCESS;
         StringBuilder errorMsgBuilder = new StringBuilder();
+        String title = null;
+        String summary = null;
+        String finalArticle = null;
 
-        // 1. AI 深度洗稿
-        String finalArticle = textProcessManager.process(cleanedText);
-
-        // 2. AI 生成标题
-        String title;
         try {
-            title = pageAssistant.generateTitle(finalArticle);
-        } catch (Exception e) {
-            log.warn(" [降级] AI 生成标题失败 pageId: {}, 使用截取兜底", pageId, e);
-            title = finalArticle.length() > 30 ? finalArticle.substring(0, 30) : finalArticle;
-            finalStatus = 4;
-            errorMsgBuilder.append("Title AI failed; ");
-        }
+            try {
+                finalArticle = textProcessManager.process(cleanedText);
+                log.debug("文本清洗完成 | pageId={}, originalLength={}, cleanedLength={}",
+                        pageId, cleanedText.length(), finalArticle.length());
+            } catch (Exception e) {
+                log.error("文本清洗失败 | pageId={}", pageId, e);
+                finalStatus = AiProcessStatusEnum.FAILED;
+                errorMsgBuilder.append("Text cleaning failed; ");
+                finalArticle = cleanedText;
+            }
 
-        // 3. AI 生成摘要
-        String summary;
-        try {
-            summary = pageAssistant.generateSummary(finalArticle);
-        } catch (Exception e) {
-            log.warn(" [降级] AI 生成摘要失败 pageId: {}, 使用截取兜底", pageId, e);
-            summary = finalArticle.length() > 200 ? finalArticle.substring(0, 200) : finalArticle;
-            finalStatus = 4;
-            errorMsgBuilder.append("Summary AI failed; ");
-        }
+            if (finalArticle == null || finalArticle.trim().isEmpty()) {
+                log.warn("清洗后文本为空 | pageId={}", pageId);
+                finalStatus = AiProcessStatusEnum.FAILED;
+                errorMsgBuilder.append("Cleaned text is empty; ");
+                finalArticle = cleanedText;
+            }
 
-        // 4. 混合分块 + 向量入库（Markdown 语义感知 + 长度兜底）
-        boolean qdrantSuccess = false;
-        int chunkCount = 0;
-        try {
-            long baseTimestamp = Instant.now().getEpochSecond();
+            try {
+                title = pageAssistant.generateTitle(finalArticle);
+                log.debug("AI 标题生成成功 | pageId={}, title={}", pageId, title);
+            } catch (Exception e) {
+                log.warn("AI 标题生成失败，使用截取兜底 | pageId={}", pageId);
+                title = finalArticle.length() > 30 ? finalArticle.substring(0, 30).trim() : finalArticle;
+                finalStatus = AiProcessStatusEnum.DEGRADED;
+                errorMsgBuilder.append("Title AI failed; ");
+            }
 
-            //核心升级：两段式分块策略
-            List<TextSegment> chunks = new java.util.ArrayList<>();
+            try {
+                summary = pageAssistant.generateSummary(finalArticle);
+                log.debug("AI 摘要生成成功 | pageId={}, summaryLength={}", pageId, summary.length());
+            } catch (Exception e) {
+                log.warn("AI 摘要生成失败，使用截取兜底 | pageId={}", pageId);
+                summary = finalArticle.length() > 200 ? finalArticle.substring(0, 200).trim() : finalArticle;
+                finalStatus = AiProcessStatusEnum.DEGRADED;
+                errorMsgBuilder.append("Summary AI failed; ");
+            }
 
-            // 第一刀：按 Markdown 1~4 级标题进行结构化物理切割
-            // 正则解析：(?m)开启多行模式；(?=^#{1,4} ) 使用正向前瞻，确保在切开文本的同时，保留 # 号本身
-            String[] markdownSections = finalArticle.split("(?m)(?=^#{1,4} )");
+            boolean qdrantSuccess = false;
+            int chunkCount = 0;
+            try {
+                long baseTimestamp = Instant.now().getEpochSecond();
 
-            // 兜底切割器：应对某个 Markdown 章节字数严重超标的情况
-            var fallbackSplitter = DocumentSplitters.recursive(CHUNK_SIZE, CHUNK_OVERLAP);
+                List<TextSegment> chunks = splitByMarkdown(finalArticle);
 
-            for (String section : markdownSections) {
-                if (section.trim().isEmpty()) {
-                    continue;
+                log.info("Markdown 混合切分完成 | pageId={}, chunkCount={}", pageId, chunks.size());
+
+                for (int i = 0; i < chunks.size(); i++) {
+                    String chunkText = chunks.get(i).text();
+                    String chunkId = pageId + "_chunk_" + i;
+
+                    String textToEmbed = (title != null ? title : "") + "\n" + chunkText;
+
+                    Map<String, Object> payload = Map.of(
+                            "userId", userId,
+                            "bookId", bookId,
+                            "pageId", pageId,
+                            "chunkId", chunkId,
+                            "chunkIndex", i,
+                            "title", title != null ? title : "",
+                            "summary", summary != null ? summary : "",
+                            "createdAt", baseTimestamp
+                    );
+
+                    qdrantTemplate.upsert(COLLECTION_NAME, chunkId, textToEmbed, chunkText, payload);
                 }
-                // 第二刀：如果 section 满足长度，直接变成 1 个 Chunk；如果超长，则安全平滑地切成多个
-                chunks.addAll(fallbackSplitter.split(Document.from(section.trim())));
+
+                chunkCount = chunks.size();
+                qdrantSuccess = true;
+                log.info("Qdrant 向量写入成功 | pageId={}, chunks={}", pageId, chunkCount);
+            } catch (Exception e) {
+                log.error("Qdrant 分块写入失败 | pageId={}", pageId, e);
+                finalStatus = AiProcessStatusEnum.FAILED;
+                errorMsgBuilder.append("Qdrant Upsert failed: ").append(e.getMessage()).append("; ");
             }
 
-            log.info(" 笔记 pageId: {} 经 Markdown 混合切分后，共计 {} 个 Chunk", pageId, chunks.size());
+            updatePageStatus(pageId, title, summary, finalArticle, chunkCount, qdrantSuccess, finalStatus, errorMsgBuilder.toString());
 
-            // 遍历生成的精细化 Chunks 并写入 Qdrant
-            for (int i = 0; i < chunks.size(); i++) {
-                String chunkText = chunks.get(i).text();
-                String chunkId = pageId + "_chunk_" + i;
-
-                // 向量化文本：拼接全局标题与当前 Markdown 段落，保证孤立的 Chunk 也拥有全局上下文
-                String textToEmbed = title + "\n" + chunkText;
-
-                Map<String, Object> payload = Map.of(
-                        "userId", userId,
-                        "bookId", bookId,
-                        "pageId", pageId,
-                        "chunkId", chunkId,
-                        "chunkIndex", i,
-                        "title", title,
-                        "summary", summary,
-                        "createdAt", baseTimestamp
-                );
-
-                qdrantTemplate.upsert(COLLECTION_NAME, chunkId, textToEmbed, chunkText, payload);
-            }
-
-            chunkCount = chunks.size();
-            qdrantSuccess = true;
         } catch (Exception e) {
-            log.error(" [严重错误] Qdrant 分块写入失败 pageId: {}", pageId, e);
-            finalStatus = 3;
-            errorMsgBuilder.append("Qdrant Upsert failed: ").append(e.getMessage());
+            log.error("AI 异步处理未知异常 | pageId={}", pageId, e);
+            try {
+                updatePageStatus(pageId, title, summary, finalArticle, 0, false, AiProcessStatusEnum.FAILED,
+                        "Unexpected error: " + e.getMessage());
+            } catch (Exception ex) {
+                log.error("异常状态回写失败 | pageId={}", pageId, ex);
+            }
+        }
+    }
+
+    private List<TextSegment> splitByMarkdown(String text) {
+        List<TextSegment> chunks = new java.util.ArrayList<>();
+
+        String[] markdownSections = text.split("(?m)(?=^#{1,4} )");
+
+        var fallbackSplitter = DocumentSplitters.recursive(chunkSize, chunkOverlap);
+
+        for (String section : markdownSections) {
+            if (section.trim().isEmpty()) {
+                continue;
+            }
+            chunks.addAll(fallbackSplitter.split(Document.from(section.trim())));
         }
 
-        // 5. MySQL 状态回写
+        return chunks;
+    }
+
+    private void updatePageStatus(String pageId, String title, String summary,
+                                  String content, int chunkCount, boolean qdrantSuccess,
+                                  AiProcessStatusEnum status, String errorMsg) {
         try {
             Page updatePage = new Page();
             updatePage.setId(pageId);
             updatePage.setTitle(title);
             updatePage.setSummary(summary);
-            updatePage.setContent(finalArticle);
+            updatePage.setContent(content);
+            updatePage.setChunkCount(qdrantSuccess ? chunkCount : 0);
+            updatePage.setAiProcessStatus(status);
 
-            if (qdrantSuccess) {
-                updatePage.setChunkCount(chunkCount);
-            } else {
-                updatePage.setChunkCount(0);
-            }
-
-            updatePage.setAiProcessStatus(finalStatus);
-
-            String finalErrorMsg = errorMsgBuilder.toString();
-            updatePage.setAiProcessMsg(finalErrorMsg.length() > 200 ? finalErrorMsg.substring(0, 200) : (finalErrorMsg.isEmpty() ? "Success" : finalErrorMsg));
+            String finalMsg = errorMsg != null && !errorMsg.isEmpty() ? errorMsg : "Success";
+            updatePage.setAiProcessMsg(finalMsg.length() > 200 ? finalMsg.substring(0, 200) : finalMsg);
             updatePage.setUpdatedAt(LocalDateTime.now());
 
             pageMapper.updateById(updatePage);
 
-            if (finalStatus == 2) {
-                log.info(" [异步线程完美收官] 笔记 pageId: {} 成功入库（分块模式）", pageId);
+            if (status == AiProcessStatusEnum.SUCCESS) {
+                log.info("AI 处理成功 | pageId={}, chunks={}", pageId, chunkCount);
             } else {
-                log.info(" [异步线程降级收官] 笔记 pageId: {} 处理完成，状态: {}", pageId, finalStatus);
+                log.warn("AI 处理降级完成 | pageId={}, status={}, msg={}", pageId, status.name(), finalMsg);
             }
-
         } catch (Exception e) {
-            log.error(" [灾难级错误] MySQL 最终状态回写失败 pageId: {}", pageId, e);
+            log.error("MySQL 状态回写失败 | pageId={}", pageId, e);
+            throw new RuntimeException("MySQL 状态回写失败", e);
         }
     }
 }

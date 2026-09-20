@@ -5,6 +5,7 @@ import com.yangmf.mini_nodepad.pojo.dto.PageIngestDTO;
 import com.yangmf.mini_nodepad.pojo.dto.PageQueryDTO;
 
 import com.yangmf.mini_nodepad.pojo.vo.PageVO;
+import com.yangmf.mini_nodepad.result.BatchOperationResult;
 import com.yangmf.mini_nodepad.result.PageResult;
 import com.yangmf.mini_nodepad.result.Result;
 import com.yangmf.mini_nodepad.service.PageService;
@@ -63,9 +64,8 @@ public class PageController {
 
     @PostMapping("/batch/soft-delete")
     @Operation(summary = "批量删除知识页（移入回收站）")
-    public Result<Void> batchSoftDelete(@NotEmpty(message = "请选择要删除的知识页") @RequestBody List<String> ids) {
-        pageService.softDeletePages(ids);
-        return Result.success();
+    public Result<BatchOperationResult> batchSoftDelete(@NotEmpty(message = "请选择要删除的知识页") @RequestBody List<String> ids) {
+        return Result.success(pageService.softDeletePages(ids));
     }
 
     @DeleteMapping("/{id}/permanent")
@@ -77,10 +77,10 @@ public class PageController {
 
     @PostMapping("/batch/permanent-delete")
     @Operation(summary = "批量永久删除知识页（不可恢复）")
-    public Result<Void> batchPermanentDelete(@NotEmpty(message = "请选择要删除的知识页") @RequestBody List<String> ids) {
-        pageService.permanentDeletePages(ids);
-        return Result.success();
+    public Result<BatchOperationResult> batchPermanentDelete(@NotEmpty(message = "请选择要删除的知识页") @RequestBody List<String> ids) {
+        return Result.success(pageService.permanentDeletePages(ids));
     }
+
 
     @PutMapping("/{id}/restore")
     @Operation(summary = "从回收站恢复知识页")
@@ -91,9 +91,8 @@ public class PageController {
 
     @PostMapping("/batch/restore")
     @Operation(summary = "批量从回收站恢复知识页")
-    public Result<Void> batchRestore(@NotEmpty(message = "请选择要恢复的知识页") @RequestBody List<String> ids) {
-        pageService.restorePages(ids);
-        return Result.success();
+    public Result<BatchOperationResult> batchRestore(@NotEmpty(message = "请选择要恢复的知识页") @RequestBody List<String> ids) {
+        return Result.success(pageService.restorePages(ids));
     }
 
     @GetMapping("/recycle-bin")

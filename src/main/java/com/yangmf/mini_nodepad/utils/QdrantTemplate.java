@@ -27,8 +27,8 @@ import static io.qdrant.client.ValueFactory.value;
 
 import lombok.Builder;
 import lombok.Data;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
@@ -37,7 +37,6 @@ import java.util.concurrent.ExecutionException;
 
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class QdrantTemplate {
 
     private final EmbeddingModel embeddingModel;
@@ -47,9 +46,21 @@ public class QdrantTemplate {
     private static final String DENSE_VECTOR_NAME = "";
     private static final String SPARSE_VECTOR_NAME = "sparse";
 
+    @Value("${qdrant.dense.score-threshold:0.30}")
+    private float denseScoreThreshold;
+
+    @Value("${qdrant.sparse.score-threshold:1.0}")
+    private float sparseScoreThreshold;
+
+    public QdrantTemplate(EmbeddingModel embeddingModel, QdrantClient qdrantClient, Bm25SparseEncoder bm25Encoder) {
+        this.embeddingModel = embeddingModel;
+        this.qdrantClient = qdrantClient;
+        this.bm25Encoder = bm25Encoder;
+    }
+
     public void upsert(String collectionName, String pointId, String textToEmbed, String rawText, Map<String, Object> payloads) {
         if (textToEmbed == null || textToEmbed.trim().isEmpty()) {
-            log.warn("写入向量库失败，文本为空. Collection: {}", collectionName);
+            log.warn("写入向量库失败，文本为空 | collection={}", collectionName);
             return;
         }
 
@@ -91,20 +102,20 @@ public class QdrantTemplate {
                     .build();
 
             qdrantClient.upsertAsync(collectionName, Collections.singletonList(point)).get();
-            log.info("成功写入向量库 [{}], PointId: {}", collectionName, pointId);
+            log.info("成功写入向量库 | collection={}, pointId={}", collectionName, pointId);
 
         } catch (ExecutionException e) {
-            log.error("写入向量库 [{}] 失败, PointId: {}", collectionName, pointId, e);
-            throw new BusinessException("Qdrant Upsert Error", e.getCause());
+            log.error("写入向量库失败 | collection={}, pointId={}", collectionName, pointId, e);
+            throw new BusinessException("向量库写入失败，请稍后重试", e.getCause());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            log.error("写入向量库 [{}] 被中断, PointId: {}", collectionName, pointId, e);
-            throw new BusinessException("Qdrant Upsert Error", e);
+            log.error("写入向量库被中断 | collection={}, pointId={}", collectionName, pointId, e);
+            throw new BusinessException("向量库写入被中断，请稍后重试", e);
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
-            log.error("写入向量库 [{}] 未知异常, PointId: {}", collectionName, pointId, e);
-            throw new BusinessException("Qdrant Upsert Error", e);
+            log.error("写入向量库未知异常 | collection={}, pointId={}", collectionName, pointId, e);
+            throw new BusinessException("向量库写入失败，请稍后重试", e);
         }
     }
 
@@ -133,15 +144,12 @@ public class QdrantTemplate {
             }
             float[] queryDenseArray = embedResponse.content().vector();
 
-            // 【核心杀招】：在 Prefetch 阶段设置 ScoreThreshold
-            // 阿里云 V4 模型的余弦相似度阈值建议设为 0.30f ~ 0.35f
-            // 低于此值的数据连入围 RRF 排名的资格都没有，直接拒收！
             PrefetchQuery densePrefetch = PrefetchQuery.newBuilder()
                     .setQuery(nearest(io.qdrant.client.VectorInputFactory.vectorInput(queryDenseArray)))
                     .setUsing(DENSE_VECTOR_NAME)
                     .setFilter(combinedFilter)
                     .setLimit(limit * 2)
-                    .setScoreThreshold(0.30f)
+                    .setScoreThreshold(denseScoreThreshold)
                     .build();
 
             SparseVector querySparseData = bm25Encoder.encodeQuery(queryText);
@@ -153,8 +161,7 @@ public class QdrantTemplate {
                     .setUsing(SPARSE_VECTOR_NAME)
                     .setFilter(combinedFilter)
                     .setLimit(limit * 2)
-                    // BM25 也可以设一个极小阈值，过滤掉仅匹配到一个常用字的结果
-                    .setScoreThreshold(1.0f)
+                    .setScoreThreshold(sparseScoreThreshold)
                     .build();
 
             QueryPoints rrfQuery = QueryPoints.newBuilder()
@@ -170,7 +177,6 @@ public class QdrantTemplate {
 
             List<VectorSearchResult> results = new ArrayList<>();
             for (ScoredPoint point : qdrantResults) {
-                // 既然我们在 Prefetch 阶段已经把垃圾拦截了，这里只要大于 0 即可
                 if (point.getScore() <= 0.0f) {
                     continue;
                 }
@@ -189,17 +195,17 @@ public class QdrantTemplate {
             return results;
 
         } catch (ExecutionException e) {
-            log.error("Qdrant RRF 检索失败, Collection: {}", collectionName, e);
-            throw new BusinessException("Qdrant RRF Search Error", e.getCause());
+            log.error("Qdrant RRF 检索失败 | collection={}", collectionName, e);
+            throw new BusinessException("向量检索服务暂时不可用，请稍后重试", e.getCause());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            log.error("Qdrant RRF 检索被中断, Collection: {}", collectionName, e);
-            throw new BusinessException("Qdrant RRF Search Error", e);
+            log.error("Qdrant RRF 检索被中断 | collection={}", collectionName, e);
+            throw new BusinessException("向量检索被中断，请稍后重试", e);
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
-            log.error("Qdrant RRF 检索未知异常, Collection: {}", collectionName, e);
-            throw new BusinessException("Qdrant RRF Search Error", e);
+            log.error("Qdrant RRF 检索未知异常 | collection={}", collectionName, e);
+            throw new BusinessException("向量检索失败，请稍后重试", e);
         }
     }
 
@@ -207,17 +213,17 @@ public class QdrantTemplate {
         try {
             Common.PointId id = Common.PointId.newBuilder().setUuid(toQdrantUuid(pointId)).build();
             qdrantClient.deleteAsync(collectionName, Collections.singletonList(id)).get();
-            log.info("已从向量库 [{}] 删除 Point: {}", collectionName, pointId);
+            log.info("已从向量库删除 | collection={}, pointId={}", collectionName, pointId);
         } catch (ExecutionException e) {
-            log.error("删除向量库内容失败", e);
-            throw new BusinessException("Qdrant Delete Error", e.getCause());
+            log.error("删除向量库内容失败 | collection={}, pointId={}", collectionName, pointId, e);
+            throw new BusinessException("向量库删除失败，请稍后重试", e.getCause());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            log.error("删除向量库被中断", e);
-            throw new BusinessException("Qdrant Delete Error", e);
+            log.error("删除向量库被中断 | collection={}, pointId={}", collectionName, pointId, e);
+            throw new BusinessException("向量库删除被中断，请稍后重试", e);
         } catch (Exception e) {
-            log.error("删除向量库未知异常", e);
-            throw new BusinessException("Qdrant Delete Error", e);
+            log.error("删除向量库未知异常 | collection={}, pointId={}", collectionName, pointId, e);
+            throw new BusinessException("向量库删除失败，请稍后重试", e);
         }
     }
 
@@ -228,17 +234,17 @@ public class QdrantTemplate {
                     .build();
 
             qdrantClient.deleteAsync(collectionName, filter).get();
-            log.info("已从向量库 [{}] 删除 pageId={} 的所有 Chunk", collectionName, pageId);
+            log.info("已从向量库删除 pageId 的所有 Chunk | collection={}, pageId={}", collectionName, pageId);
         } catch (ExecutionException e) {
-            log.error("批量删除 Chunk 失败, collection: {}, pageId: {}", collectionName, pageId, e);
-            throw new BusinessException("Qdrant Batch Delete Error", e.getCause());
+            log.error("批量删除 Chunk 失败 | collection={}, pageId={}", collectionName, pageId, e);
+            throw new BusinessException("向量库批量删除失败，请稍后重试", e.getCause());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            log.error("批量删除 Chunk 被中断, collection: {}, pageId: {}", collectionName, pageId, e);
-            throw new BusinessException("Qdrant Batch Delete Error", e);
+            log.error("批量删除 Chunk 被中断 | collection={}, pageId={}", collectionName, pageId, e);
+            throw new BusinessException("向量库批量删除被中断，请稍后重试", e);
         } catch (Exception e) {
-            log.error("批量删除 Chunk 未知异常, collection: {}, pageId: {}", collectionName, pageId, e);
-            throw new BusinessException("Qdrant Batch Delete Error", e);
+            log.error("批量删除 Chunk 未知异常 | collection={}, pageId={}", collectionName, pageId, e);
+            throw new BusinessException("向量库批量删除失败，请稍后重试", e);
         }
     }
 
@@ -266,18 +272,18 @@ public class QdrantTemplate {
                 }
             }
 
-            log.debug("Qdrant 取回 {} 个 chunk 文本 | pageId={}", rawTexts.size(), pageId != null ? pageId : "ALL");
+            log.debug("Qdrant 取回 chunk 文本 | count={}, pageId={}", rawTexts.size(), pageId != null ? pageId : "ALL");
             return rawTexts;
         } catch (ExecutionException e) {
             log.error("Qdrant 查询 chunk 文本失败 | pageId={}", pageId, e);
-            throw new BusinessException("Qdrant Fetch Chunk Texts Error", e.getCause());
+            throw new BusinessException("向量库查询失败，请稍后重试", e.getCause());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("Qdrant 查询 chunk 文本被中断 | pageId={}", pageId, e);
-            throw new BusinessException("Qdrant Fetch Chunk Texts Error", e);
+            throw new BusinessException("向量库查询被中断，请稍后重试", e);
         } catch (Exception e) {
             log.error("Qdrant 查询 chunk 文本未知异常 | pageId={}", pageId, e);
-            throw new BusinessException("Qdrant Fetch Chunk Texts Error", e);
+            throw new BusinessException("向量库查询失败，请稍后重试", e);
         }
     }
 

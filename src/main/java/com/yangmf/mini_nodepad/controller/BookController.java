@@ -4,6 +4,7 @@ import com.yangmf.mini_nodepad.pojo.dto.BookCreateDTO;
 import com.yangmf.mini_nodepad.pojo.dto.BookUpdateDTO;
 import com.yangmf.mini_nodepad.pojo.dto.PageQueryDTO;
 import com.yangmf.mini_nodepad.pojo.vo.BookVO;
+import com.yangmf.mini_nodepad.result.BatchOperationResult;
 import com.yangmf.mini_nodepad.result.PageResult;
 import com.yangmf.mini_nodepad.result.Result;
 import com.yangmf.mini_nodepad.service.BookService;
@@ -60,8 +61,7 @@ public class BookController {
 
     @PostMapping("/batch/delete")
     @Operation(summary = "批量删除知识库")
-    public Result<Void> batchDelete(@NotEmpty(message = "请选择要删除的知识库") @RequestBody List<String> ids) {
-        bookService.deleteBooks(ids);
-        return Result.success();
+    public Result<BatchOperationResult> batchDelete(@NotEmpty(message = "请选择要删除的知识库") @RequestBody List<String> ids) {
+        return Result.success(bookService.deleteBooks(ids));
     }
 }
