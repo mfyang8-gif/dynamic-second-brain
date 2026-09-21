@@ -1,7 +1,6 @@
-package com.yangmf.mini_nodepad.utils;
+package com.yangmf.mini_nodepad.ai.rag;
 
-import com.yangmf.mini_nodepad.encoder.Bm25SparseEncoder;
-import com.yangmf.mini_nodepad.encoder.Bm25SparseEncoder.SparseVector;
+import com.yangmf.mini_nodepad.ai.rag.Bm25SparseEncoder.SparseVector;
 import com.yangmf.mini_nodepad.exception.BusinessException;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.model.embedding.EmbeddingModel;

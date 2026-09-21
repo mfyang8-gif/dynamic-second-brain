@@ -1,9 +1,8 @@
-package com.yangmf.mini_nodepad.config;
+package com.yangmf.mini_nodepad.ai.config;
 
 
-import com.yangmf.mini_nodepad.aiservice.GeneralAssistant;
-import com.yangmf.mini_nodepad.aiservice.MainChatAssistant;
-import com.yangmf.mini_nodepad.aiservice.PageAssistant;
+import com.yangmf.mini_nodepad.ai.aiservice.*;
+
 import dev.langchain4j.community.model.dashscope.QwenChatModel;
 import dev.langchain4j.memory.chat.ChatMemoryProvider;
 import dev.langchain4j.model.openai.OpenAiChatModel;
@@ -22,6 +21,7 @@ public class AssistantConfig {
     private final ToolProvider allToolProvider;
 
 
+
     private final OpenAiChatModel doubaoModel;
 
 
@@ -32,7 +32,9 @@ public class AssistantConfig {
 
     private final ChatMemoryProvider chatMemoryProvider;
 
-    public AssistantConfig(OpenAiChatModel doubaoModel, QwenChatModel qwenChatModel, OpenAiStreamingChatModel streamingModel, ChatMemoryProvider chatMemoryProvider,   @Qualifier("mcpToolProvider")ToolProvider allToolProvider) {
+
+
+    public AssistantConfig(OpenAiChatModel doubaoModel, QwenChatModel qwenChatModel, OpenAiStreamingChatModel streamingModel, @Qualifier("chatMemoryProvider")ChatMemoryProvider chatMemoryProvider,   @Qualifier("mcpToolProvider")ToolProvider allToolProvider) {
         this.doubaoModel = doubaoModel;
         this.qwenChatModel = qwenChatModel;
         this.streamingModel = streamingModel;
@@ -62,6 +64,22 @@ public class AssistantConfig {
                 .chatMemoryProvider(chatMemoryProvider)
                 .build();
     }
+
+    @Bean
+    public QueryRewriteAssistant queryAssistant() {
+        return AiServices.builder(QueryRewriteAssistant.class)
+                .chatModel(qwenChatModel)
+                .build();
+    }
+
+
+    @Bean
+    public IntentRouter intentRouter() {
+        return AiServices.builder(IntentRouter.class)
+                .chatModel(qwenChatModel)
+                .build();
+    }
+
 
 
 

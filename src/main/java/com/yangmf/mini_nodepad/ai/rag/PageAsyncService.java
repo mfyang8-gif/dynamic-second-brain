@@ -1,12 +1,11 @@
-package com.yangmf.mini_nodepad.service;
+package com.yangmf.mini_nodepad.ai.rag;
 
-import com.yangmf.mini_nodepad.aiservice.PageAssistant;
+import com.yangmf.mini_nodepad.ai.aiservice.PageAssistant;
+import com.yangmf.mini_nodepad.ai.component.TextProcessManager;
 import com.yangmf.mini_nodepad.config.ThreadPoolConfig;
 import com.yangmf.mini_nodepad.enums.AiProcessStatusEnum;
 import com.yangmf.mini_nodepad.mapper.PageMapper;
 import com.yangmf.mini_nodepad.pojo.entity.Page;
-import com.yangmf.mini_nodepad.utils.QdrantTemplate;
-import com.yangmf.mini_nodepad.utils.TextProcessManager;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.document.splitter.DocumentSplitters;
 import dev.langchain4j.data.segment.TextSegment;

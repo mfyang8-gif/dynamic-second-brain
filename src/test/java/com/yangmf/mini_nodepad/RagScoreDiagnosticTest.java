@@ -1,7 +1,7 @@
 package com.yangmf.mini_nodepad;
 
-import com.yangmf.mini_nodepad.service.PageRagRetrievalService;
-import com.yangmf.mini_nodepad.service.PageRagRetrievalService.RagChunk;
+import com.yangmf.mini_nodepad.ai.rag.PageRagRetrievalService;
+import com.yangmf.mini_nodepad.ai.rag.PageRagRetrievalService.RagChunk;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;

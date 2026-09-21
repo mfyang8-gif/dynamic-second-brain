@@ -5,10 +5,10 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
-import com.yangmf.mini_nodepad.aiservice.PageAssistant;
+import com.yangmf.mini_nodepad.ai.aiservice.PageAssistant;
 import com.yangmf.mini_nodepad.context.BaseContext;
 import com.yangmf.mini_nodepad.converter.PageConverter;
-import com.yangmf.mini_nodepad.encoder.Bm25SparseEncoder;
+import com.yangmf.mini_nodepad.ai.rag.Bm25SparseEncoder;
 import com.yangmf.mini_nodepad.enums.AiProcessStatusEnum;
 import com.yangmf.mini_nodepad.enums.SourceTypeEnum;
 import com.yangmf.mini_nodepad.exception.BusinessException;
@@ -21,16 +21,20 @@ import com.yangmf.mini_nodepad.pojo.entity.Page;
 import com.yangmf.mini_nodepad.pojo.vo.PageVO;
 import com.yangmf.mini_nodepad.result.BatchOperationResult;
 import com.yangmf.mini_nodepad.result.PageResult;
-import com.yangmf.mini_nodepad.service.PageAsyncService;
+import com.yangmf.mini_nodepad.ai.rag.PageAsyncService;
 import com.yangmf.mini_nodepad.service.PageService;
-import com.yangmf.mini_nodepad.utils.QdrantTemplate;
-import com.yangmf.mini_nodepad.utils.TextProcessManager;
+import com.yangmf.mini_nodepad.ai.rag.QdrantTemplate;
+import com.yangmf.mini_nodepad.ai.component.TextProcessManager;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.Executor;
@@ -89,8 +93,23 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
 
         String fastCleanText = textCleaner.physicalClean(dto.getContent());
 
+        String contentHash = sha256(fastCleanText);
+
+        LambdaQueryWrapper<Page> dupCheck = new LambdaQueryWrapper<>();
+        dupCheck.eq(Page::getBookId, dto.getBookId())
+                .eq(Page::getContentHash, contentHash)
+                .eq(Page::getDeleted, 0);
+        Page existingPage = this.getOne(dupCheck);
+        if (existingPage != null) {
+            log.warn("检测到重复内容，拒绝入库 | bookId={}, existingPageId={}, existingTitle={}, hash={}",
+                    dto.getBookId(), existingPage.getId(), existingPage.getTitle(), contentHash.substring(0, 12));
+            throw new ValidationException(
+                    "该内容已在知识库中存在（「" + existingPage.getTitle() + "」），无需重复添加");
+        }
+
         Page page = pageConverter.toEntity(dto);
         page.setContent(fastCleanText);
+        page.setContentHash(contentHash);
 
         if (dto.getSourceType() != null) {
             try {
@@ -103,9 +122,16 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
         boolean needAiProcess = Integer.valueOf(1).equals(dto.getAutoOptimize());
         page.setAiProcessStatus(needAiProcess ? AiProcessStatusEnum.PROCESSING : AiProcessStatusEnum.PENDING);
 
-        this.save(page);
-        log.info("知识页初次录入成功 | pageId={}, bookId={}, aiStatus={}",
-                page.getId(), page.getBookId(), page.getAiProcessStatus());
+        try {
+            this.save(page);
+        } catch (DuplicateKeyException e) {
+            log.warn("并发拦截：重复内容入库被数据库拒绝 | bookId={}, hash={}",
+                    dto.getBookId(), contentHash.substring(0, 12));
+            throw new ValidationException("内容重复，请勿重复提交");
+        }
+
+        log.info("知识页初次录入成功 | pageId={}, bookId={}, aiStatus={}, hash={}",
+                page.getId(), page.getBookId(), page.getAiProcessStatus(), contentHash.substring(0, 12));
 
         if (needAiProcess) {
             pageAsyncService.processAiIngest(page.getId(), fastCleanText, page.getBookId(), currentUserId);
@@ -412,6 +438,19 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
                     log.error("BM25 自动重建失败", e);
                 }
             });
+        }
+    }
+    private String sha256(String input) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hashBytes = digest.digest(input.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(64);
+            for (byte b : hashBytes) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-256 算法不可用", e);
         }
     }
 

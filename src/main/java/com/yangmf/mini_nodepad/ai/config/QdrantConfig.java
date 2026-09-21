@@ -1,4 +1,4 @@
-package com.yangmf.mini_nodepad.config;
+package com.yangmf.mini_nodepad.ai.config;
 
 import com.yangmf.mini_nodepad.properties.QdrantProperties;
 import io.qdrant.client.QdrantClient;

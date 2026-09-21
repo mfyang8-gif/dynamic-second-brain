@@ -23,4 +23,6 @@ public interface PageMapper extends BaseMapper<Page> {
     int permanentDeleteRecycleBin(@Param("userId") String userId);
 
     int cleanExpiredRecycleBin(@Param("beforeTime") LocalDateTime beforeTime);
+    int sumChunkCountByBookId(@Param("bookId") String bookId);
+
 }

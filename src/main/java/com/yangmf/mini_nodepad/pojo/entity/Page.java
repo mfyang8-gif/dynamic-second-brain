@@ -61,6 +61,9 @@ public class Page implements Serializable {
     @Schema(description = "更新时间")
     private LocalDateTime updatedAt;
 
+    @Schema(description = "内容SHA-256哈希，用于去重")
+    private String contentHash;
+
     @TableLogic
     @Schema(description = "逻辑删除标记 0-正常 1-已删除")
     private Integer deleted;

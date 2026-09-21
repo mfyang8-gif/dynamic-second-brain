@@ -1,6 +1,6 @@
 package com.yangmf.mini_nodepad;
 
-import com.yangmf.mini_nodepad.aiservice.PageAssistant;
+import com.yangmf.mini_nodepad.ai.aiservice.PageAssistant;
 import com.yangmf.mini_nodepad.context.BaseContext;
 import com.yangmf.mini_nodepad.exception.BusinessException;
 import com.yangmf.mini_nodepad.service.impl.PageServiceImpl;

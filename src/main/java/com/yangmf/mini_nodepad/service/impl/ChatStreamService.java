@@ -2,21 +2,27 @@ package com.yangmf.mini_nodepad.service.impl;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.yangmf.mini_nodepad.aiservice.GeneralAssistant;
-import com.yangmf.mini_nodepad.aiservice.MainChatAssistant;
+import com.yangmf.mini_nodepad.ai.aiservice.GeneralAssistant;
+import com.yangmf.mini_nodepad.ai.aiservice.MainChatAssistant;
+import com.yangmf.mini_nodepad.ai.component.*;
+import com.yangmf.mini_nodepad.ai.rag.PageRagRetrievalService;
 import com.yangmf.mini_nodepad.enums.AiProcessStatusEnum;
+import com.yangmf.mini_nodepad.enums.IntentType;
 import com.yangmf.mini_nodepad.exception.BusinessException;
 import com.yangmf.mini_nodepad.exception.ForbiddenException;
 import com.yangmf.mini_nodepad.exception.MiniNotePadException;
 import com.yangmf.mini_nodepad.exception.ResourceNotFoundException;
-import com.yangmf.mini_nodepad.guard.ChatInputGuard;
 import com.yangmf.mini_nodepad.mapper.PageMapper;
 import com.yangmf.mini_nodepad.pojo.dto.BookChatDTO;
 import com.yangmf.mini_nodepad.pojo.entity.Page;
 import com.yangmf.mini_nodepad.pojo.vo.ChatSessionVO;
-import com.yangmf.mini_nodepad.service.ChatConfigService;
 import com.yangmf.mini_nodepad.service.ChatSessionService;
-import com.yangmf.mini_nodepad.service.PageRagRetrievalService;
+import com.yangmf.mini_nodepad.utils.ThinkingTagFilter;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.ChatMessageType;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.memory.chat.ChatMemoryProvider;
 import dev.langchain4j.service.TokenStream;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -25,6 +31,7 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 import java.net.SocketTimeoutException;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executor;
@@ -43,6 +50,10 @@ public class ChatStreamService {
     private final PageMapper pageMapper;
     private final ObjectMapper objectMapper;
     private final Executor aiTaskExecutor;
+    private final QueryRewriteService queryRewriteService;
+    private final IntentRouterService intentRouterService;
+    private final ChatSummaryService chatSummaryService;
+    private final ChatMemoryProvider chatMemoryProvider;
 
     @Value("${chat.title-max-length:50}")
     private int titleMaxLength;
@@ -66,7 +77,11 @@ public class ChatStreamService {
                              GeneralAssistant generalAssistant,
                              PageMapper pageMapper,
                              ObjectMapper objectMapper,
-                             @Qualifier("aiTaskExecutor") Executor aiTaskExecutor) {
+                             @Qualifier("aiTaskExecutor") Executor aiTaskExecutor,
+                             QueryRewriteService queryRewriteService,
+                             IntentRouterService intentRouterService,
+                             ChatSummaryService chatSummaryService,
+                             ChatMemoryProvider chatMemoryProvider) {
         this.mainChatAssistant = mainChatAssistant;
         this.pageRagRetrievalService = pageRagRetrievalService;
         this.chatConfigService = chatConfigService;
@@ -76,6 +91,10 @@ public class ChatStreamService {
         this.pageMapper = pageMapper;
         this.objectMapper = objectMapper;
         this.aiTaskExecutor = aiTaskExecutor;
+        this.queryRewriteService = queryRewriteService;
+        this.intentRouterService = intentRouterService;
+        this.chatSummaryService = chatSummaryService;
+        this.chatMemoryProvider = chatMemoryProvider;
     }
 
     public Flux<ChatStreamEvent> chatStream(BookChatDTO dto) {
@@ -90,99 +109,17 @@ public class ChatStreamService {
                     return;
                 }
 
-                String sanitizedCustomText = chatInputGuard.sanitizeCustomText(dto.getCustomText());
-                String roleInstruction = chatConfigService.resolveRoleInstruction(dto.getRole(), sanitizedCustomText);
-                String lengthConstraint = chatConfigService.resolveLengthConstraint(dto.getLength());
-
                 String sessionId = dto.getSessionId();
-                String bookId = chatSessionService.getBookIdBySessionId(sessionId);
 
-                List<String> effectivePageIds = dto.getPageIds();
-                if (effectivePageIds != null && !effectivePageIds.isEmpty()) {
-                    List<Page> pages = pageMapper.selectBatchIds(effectivePageIds);
-                    List<String> unreadyPageIds = pages.stream()
-                            .filter(p -> p.getAiProcessStatus() == null || p.getAiProcessStatus() != AiProcessStatusEnum.SUCCESS)
-                            .map(Page::getId)
-                            .toList();
-                    if (!unreadyPageIds.isEmpty()) {
-                        log.info("Chat 过滤未就绪页面 | sessionId={}, unreadyPageIds={}", sessionId, unreadyPageIds);
-                        sink.next(statusEvent("skipped",
-                                "已跳过 " + unreadyPageIds.size() + " 个未完成 AI 处理的笔记"));
-                    }
-                    List<String> readyPageIds = pages.stream()
-                            .filter(p -> p.getAiProcessStatus() != null && p.getAiProcessStatus() == AiProcessStatusEnum.SUCCESS)
-                            .map(Page::getId)
-                            .toList();
-                    if (readyPageIds.isEmpty()) {
-                        sink.next(errorEvent(ERR_CODE_BAD_REQUEST,
-                                "所选笔记均未完成 AI 处理，无法进行检索"));
-                        sink.complete();
-                        return;
-                    }
-                    effectivePageIds = readyPageIds;
-                }
+                IntentType intent = intentRouterService.classify(sanitizedQuestion);
+                log.info("意图路由结果 | sessionId={}, intent={}", sessionId, intent);
 
-                sink.next(statusEvent("retrieving", "正在检索知识库..."));
-
-                PageRagRetrievalService.ProcessedResult ragResult;
-                try {
-                    ragResult = pageRagRetrievalService.process(
-                            pageRagRetrievalService.retrieveChunks(sanitizedQuestion, bookId, effectivePageIds)
-                    );
-                } catch (BusinessException e) {
-                    log.error("RAG 检索基础设施异常 | bookId={}", bookId, e);
-                    sink.next(errorEvent(ERR_CODE_RAG_FAILURE, "知识检索服务暂时不可用，请稍后重试"));
-                    sink.complete();
+                if (intent == IntentType.CHITCHAT || intent == IntentType.META_QUESTION) {
+                    handleNonRagChat(sink, sessionId, sanitizedQuestion);
                     return;
                 }
 
-                String context;
-                if (ragResult.hasResults()) {
-                    int chunkCount = ragResult.rawChunks().size();
-                    sink.next(statusEvent("retrieved", "检索到 " + chunkCount + " 个相关片段"));
-                    context = ragResult.contextString();
-                } else {
-                    sink.next(statusEvent("retrieved", "未检索到相关内容"));
-                    context = "无相关检索结果";
-                    log.info("RAG 检索无命中 | bookId={}, sessionId={}", bookId, sessionId);
-                }
-
-                sink.next(statusEvent("thinking", "正在思考中..."));
-
-                TokenStream tokenStream = mainChatAssistant.chat(
-                        sessionId, roleInstruction, lengthConstraint, context, sanitizedQuestion
-                );
-
-                StringBuilder fullResponse = new StringBuilder();
-
-                tokenStream
-                        .onPartialResponse(token -> {
-                            if (!sink.isCancelled()) {
-                                fullResponse.append(token);
-                                sink.next(messageEvent(token));
-                            }
-                        })
-                        .onCompleteResponse(response -> {
-                            try {
-                                if (sink.isCancelled()) {
-                                    log.warn("流式对话被客户端中止 | sessionId={}", sessionId);
-                                    return;
-                                }
-                                List<String> sourcePageIds = ragResult.sourcePageIds();
-                                sink.next(doneEvent(sourcePageIds));
-                                persistMessages(sessionId, sanitizedQuestion, fullResponse.toString(), sourcePageIds);
-                            } catch (Exception e) {
-                                log.error("流完成后处理异常 | sessionId={}", sessionId, e);
-                            } finally {
-                                sink.complete();
-                            }
-                        })
-                        .onError(error -> {
-                            if (!sink.isCancelled()) {
-                                handleLlmError(sessionId, error, sink);
-                            }
-                        })
-                        .start();
+                handleRagChat(sink, dto, sessionId, sanitizedQuestion);
 
             } catch (ForbiddenException e) {
                 log.warn("对话权限校验失败 | sessionId={}, msg={}", dto.getSessionId(), e.getMessage());
@@ -202,6 +139,217 @@ public class ChatStreamService {
                 sink.complete();
             }
         }));
+    }
+
+    // ==================== 非 RAG 路径（闲聊/元问题） ====================
+
+    private void handleNonRagChat(reactor.core.publisher.FluxSink<ChatStreamEvent> sink,
+                                  String sessionId, String question) {
+        sink.next(statusEvent("thinking", "正在思考中..."));
+
+        String historySummary = chatSummaryService.getSummary(sessionId);
+        TokenStream tokenStream = mainChatAssistant.chat(sessionId, historySummary, question);
+        StringBuilder fullResponse = new StringBuilder();
+        ThinkingTagFilter tagFilter = new ThinkingTagFilter();
+
+        tokenStream
+                .onPartialResponse(token -> {
+                    if (!sink.isCancelled()) {
+                        fullResponse.append(token);
+                        String visible = tagFilter.filter(token);
+                        if (!visible.isEmpty()) {
+                            sink.next(messageEvent(visible));
+                        }
+                    }
+                })
+                .onCompleteResponse(response -> {
+                    try {
+                        if (sink.isCancelled()) {
+                            log.warn("流式对话被客户端中止 | sessionId={}", sessionId);
+                            return;
+                        }
+                        sink.next(doneEventEmpty());
+                        persistMessages(sessionId, question, fullResponse.toString(), List.of());
+                        chatSummaryService.triggerAsyncSummarization(sessionId);
+                    } catch (Exception e) {
+                        log.error("流完成后处理异常 | sessionId={}", sessionId, e);
+                    } finally {
+                        sink.complete();
+                    }
+                })
+                .onError(error -> {
+                    if (!sink.isCancelled()) {
+                        handleLlmError(sessionId, error, sink);
+                    }
+                })
+                .start();
+    }
+
+    // ==================== RAG 路径（知识查询） ====================
+
+    private void handleRagChat(reactor.core.publisher.FluxSink<ChatStreamEvent> sink,
+                               BookChatDTO dto, String sessionId, String sanitizedQuestion) {
+        String sanitizedCustomText = chatInputGuard.sanitizeCustomText(dto.getCustomText());
+        String roleInstruction = chatConfigService.resolveRoleInstruction(dto.getRole(), sanitizedCustomText);
+        String lengthConstraint = chatConfigService.resolveLengthConstraint(dto.getLength());
+
+        String bookId = chatSessionService.getBookIdBySessionId(sessionId);
+        String historySummary = chatSummaryService.getSummary(sessionId);
+
+        List<String> effectivePageIds = dto.getPageIds();
+        if (effectivePageIds != null && !effectivePageIds.isEmpty()) {
+            List<Page> pages = pageMapper.selectBatchIds(effectivePageIds);
+            List<String> unreadyPageIds = pages.stream()
+                    .filter(p -> p.getAiProcessStatus() == null || p.getAiProcessStatus() != AiProcessStatusEnum.SUCCESS)
+                    .map(Page::getId)
+                    .toList();
+            if (!unreadyPageIds.isEmpty()) {
+                log.info("Chat 过滤未就绪页面 | sessionId={}, unreadyPageIds={}", sessionId, unreadyPageIds);
+                sink.next(statusEvent("skipped",
+                        "已跳过 " + unreadyPageIds.size() + " 个未完成 AI 处理的笔记"));
+            }
+            List<String> readyPageIds = pages.stream()
+                    .filter(p -> p.getAiProcessStatus() != null && p.getAiProcessStatus() == AiProcessStatusEnum.SUCCESS)
+                    .map(Page::getId)
+                    .toList();
+            if (readyPageIds.isEmpty()) {
+                sink.next(errorEvent(ERR_CODE_BAD_REQUEST,
+                        "所选笔记均未完成 AI 处理，无法进行检索"));
+                sink.complete();
+                return;
+            }
+            effectivePageIds = readyPageIds;
+        }
+        final List<String> searchPageIds = effectivePageIds;
+
+        sink.next(statusEvent("rewriting", "正在优化检索查询..."));
+
+        String conversationContext = buildConversationContext(sessionId);
+        QueryRewriteService.RewrittenQuery rewritten =
+                queryRewriteService.rewrite(sanitizedQuestion, conversationContext);
+
+        sink.next(statusEvent("retrieving", "正在检索知识库..."));
+
+        PageRagRetrievalService.ProcessedResult ragResult;
+        try {
+            List<PageRagRetrievalService.RagChunk> allChunks;
+
+            if (rewritten.decomposed()) {
+                log.info("Query 已拆分为子查询 | count={}, queries={}",
+                        rewritten.searchQueries().size(), rewritten.searchQueries());
+
+                allChunks = rewritten.searchQueries().stream()
+                        .flatMap(subQuery -> pageRagRetrievalService
+                                .retrieveChunks(subQuery, bookId, searchPageIds, 3)
+                                .stream())
+                        .distinct()
+                        .toList();
+
+                sink.next(statusEvent("retrieved",
+                        "问题已拆分为 " + rewritten.searchQueries().size()
+                                + " 个子查询，合并检索到 " + allChunks.size() + " 个片段"));
+            } else {
+                allChunks = pageRagRetrievalService.retrieveChunks(
+                        rewritten.primaryQuery(), bookId, searchPageIds);
+            }
+
+            ragResult = pageRagRetrievalService.process(allChunks);
+        } catch (BusinessException e) {
+            log.error("RAG 检索基础设施异常 | bookId={}", bookId, e);
+            sink.next(errorEvent(ERR_CODE_RAG_FAILURE, "知识检索服务暂时不可用，请稍后重试"));
+            sink.complete();
+            return;
+        }
+
+        String context;
+        if (ragResult.hasResults()) {
+            int chunkCount = ragResult.rawChunks().size();
+            if (!rewritten.decomposed()) {
+                sink.next(statusEvent("retrieved", "检索到 " + chunkCount + " 个相关片段"));
+            }
+            context = ragResult.contextString();
+        } else {
+            sink.next(statusEvent("retrieved", "未检索到相关内容"));
+            context = "无相关检索结果";
+            log.info("RAG 检索无命中 | bookId={}, sessionId={}", bookId, sessionId);
+        }
+
+        sink.next(statusEvent("thinking", "正在思考中..."));
+
+        TokenStream tokenStream = mainChatAssistant.chat(
+                sessionId, roleInstruction, lengthConstraint, context,
+                historySummary, sanitizedQuestion
+        );
+
+        StringBuilder fullResponse = new StringBuilder();
+        ThinkingTagFilter tagFilter = new ThinkingTagFilter();
+
+        tokenStream
+                .onPartialResponse(token -> {
+                    if (!sink.isCancelled()) {
+                        fullResponse.append(token);
+                        String visible = tagFilter.filter(token);
+                        if (!visible.isEmpty()) {
+                            sink.next(messageEvent(visible));
+                        }
+                    }
+                })
+                .onCompleteResponse(response -> {
+                    try {
+                        if (sink.isCancelled()) {
+                            log.warn("流式对话被客户端中止 | sessionId={}", sessionId);
+                            return;
+                        }
+                        List<String> sourcePageIds = ragResult.sourcePageIds();
+                        sink.next(doneEvent(ragResult));
+                        persistMessages(sessionId, sanitizedQuestion, fullResponse.toString(), sourcePageIds);
+                        chatSummaryService.triggerAsyncSummarization(sessionId);
+                    } catch (Exception e) {
+                        log.error("流完成后处理异常 | sessionId={}", sessionId, e);
+                    } finally {
+                        sink.complete();
+                    }
+                })
+                .onError(error -> {
+                    if (!sink.isCancelled()) {
+                        handleLlmError(sessionId, error, sink);
+                    }
+                })
+                .start();
+    }
+
+    // ==================== 多轮对话上下文提取（供 QueryRewrite 指代消解） ====================
+
+    private String buildConversationContext(String sessionId) {
+        try {
+            List<ChatMessage> messages = chatMemoryProvider.get(sessionId).messages();
+            if (messages == null || messages.isEmpty()) {
+                return "";
+            }
+
+            int size = messages.size();
+            int keep = Math.min(6, size);
+            List<ChatMessage> recentMessages = messages.subList(size - keep, size);
+
+            StringBuilder sb = new StringBuilder();
+            for (ChatMessage msg : recentMessages) {
+                if (msg.type() == ChatMessageType.USER) {
+                    UserMessage um = (UserMessage) msg;
+                    sb.append("用户: ").append(um.singleText()).append("\n");
+                } else if (msg.type() == ChatMessageType.AI) {
+                    AiMessage am = (AiMessage) msg;
+                    String text = am.text();
+                    if (text != null && text.length() > 150) {
+                        text = text.substring(0, 150) + "...";
+                    }
+                    sb.append("助手: ").append(text != null ? text : "").append("\n");
+                }
+            }
+            return sb.toString().trim();
+        } catch (Exception e) {
+            log.warn("构建改写上下文失败，降级为无上下文 | sessionId={}", sessionId, e);
+            return "";
+        }
     }
 
     // ==================== 错误处理 ====================
@@ -317,11 +465,34 @@ public class ChatStreamService {
         }
     }
 
-    private ChatStreamEvent doneEvent(List<String> sourcePageIds) {
+    private ChatStreamEvent doneEvent(PageRagRetrievalService.ProcessedResult ragResult) {
         try {
-            return new ChatStreamEvent("done", objectMapper.writeValueAsString(Map.of("sourcePageIds", sourcePageIds)));
+            List<Map<String, Object>> refs = ragResult.sourceReferences().stream()
+                    .map(r -> {
+                        Map<String, Object> m = new LinkedHashMap<>();
+                        m.put("index", r.index());
+                        m.put("title", r.title() != null ? r.title() : "");
+                        m.put("pageId", r.pageId() != null ? r.pageId() : "");
+                        m.put("chunkIndex", r.chunkIndex());
+                        m.put("textSnippet", r.textSnippet());
+                        return m;
+                    })
+                    .toList();
+            return new ChatStreamEvent("done", objectMapper.writeValueAsString(
+                    Map.of("sourcePageIds", ragResult.sourcePageIds(), "sourceReferences", refs)
+            ));
         } catch (JsonProcessingException e) {
-            return new ChatStreamEvent("done", "{\"sourcePageIds\":[]}");
+            return new ChatStreamEvent("done", "{\"sourcePageIds\":[],\"sourceReferences\":[]}");
+        }
+    }
+
+    private ChatStreamEvent doneEventEmpty() {
+        try {
+            return new ChatStreamEvent("done", objectMapper.writeValueAsString(
+                    Map.of("sourcePageIds", List.of(), "sourceReferences", List.of())
+            ));
+        } catch (JsonProcessingException e) {
+            return new ChatStreamEvent("done", "{\"sourcePageIds\":[],\"sourceReferences\":[]}");
         }
     }
 

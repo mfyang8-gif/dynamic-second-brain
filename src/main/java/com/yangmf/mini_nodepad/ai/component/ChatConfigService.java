@@ -1,4 +1,4 @@
-package com.yangmf.mini_nodepad.service;
+package com.yangmf.mini_nodepad.ai.component;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;

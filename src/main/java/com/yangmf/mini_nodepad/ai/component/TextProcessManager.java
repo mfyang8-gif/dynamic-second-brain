@@ -1,6 +1,6 @@
-package com.yangmf.mini_nodepad.utils;
+package com.yangmf.mini_nodepad.ai.component;
 
-import com.yangmf.mini_nodepad.aiservice.GeneralAssistant;
+import com.yangmf.mini_nodepad.ai.aiservice.GeneralAssistant;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;

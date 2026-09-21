@@ -70,4 +70,12 @@
           AND deleted_at &lt; #{beforeTime}
     </delete>
 
+    <select id="sumChunkCountByBookId" resultType="int">
+        SELECT COALESCE(SUM(chunk_count), 0)
+        FROM page
+        WHERE book_id = #{bookId}
+          AND deleted = 0
+          AND ai_process_status = 'SUCCESS'
+    </select>
+
 </mapper>

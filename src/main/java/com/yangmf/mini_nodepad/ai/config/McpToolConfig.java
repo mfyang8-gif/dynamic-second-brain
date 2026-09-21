@@ -1,4 +1,4 @@
-package com.yangmf.mini_nodepad.config;
+package com.yangmf.mini_nodepad.ai.config;
 
 import dev.langchain4j.mcp.McpToolProvider;
 import dev.langchain4j.mcp.client.DefaultMcpClient;

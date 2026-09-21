@@ -1,4 +1,4 @@
-package com.yangmf.mini_nodepad.aiservice;
+package com.yangmf.mini_nodepad.ai.aiservice;
 
 import dev.langchain4j.service.SystemMessage;
 import dev.langchain4j.service.UserMessage;

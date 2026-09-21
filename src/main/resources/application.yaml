@@ -102,6 +102,7 @@ langchain4j:
         api-key: sk-770db1ffaa7e4fff80ed1f95259b121f
         model-name: qwen-turbo
 
+
 pagehelper:
   helper-dialect: mysql
   reasonable: true
@@ -129,7 +130,15 @@ sse:
 # RAG 检索配置
 rag:
   max-results: 5
-  min-score-threshold: 0.02
+  min-score-threshold: 0.05
+  rerank:
+    enabled: true
+    chunk-threshold: 100
+    top-n: 5
+    candidate-multiplier: 3
+    base-url: https://llm-c36pjigszb7ajl5e.cn-beijing.maas.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+    api-key: sk-770db1ffaa7e4fff80ed1f95259b121f
+    model-name: qwen3.7-text-rerank
 # 输入清洗长度限制
 guard:
   max-question-length: 2000
@@ -148,8 +157,8 @@ bm25:
 chat:
   title-max-length: 50
   memory:
-    token-threshold: 1000
-    summary-check-interval: 3
+    max-messages: 6
+    summary-interval: 6
     summary-expire-days: 30
 
 # Qdrant 向量检索阈值配置

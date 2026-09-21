@@ -1,4 +1,4 @@
-package com.yangmf.mini_nodepad.encoder;
+package com.yangmf.mini_nodepad.ai.rag;
 
 import com.huaban.analysis.jieba.JiebaSegmenter;
 import com.huaban.analysis.jieba.SegToken;

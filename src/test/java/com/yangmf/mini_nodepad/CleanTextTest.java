@@ -1,6 +1,6 @@
 package com.yangmf.mini_nodepad;
 
-import com.yangmf.mini_nodepad.utils.TextProcessManager;
+import com.yangmf.mini_nodepad.ai.component.TextProcessManager;
 import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;

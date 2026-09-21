@@ -1,14 +1,12 @@
 package com.yangmf.mini_nodepad;
 
-import com.yangmf.mini_nodepad.aiservice.PageAssistant;
+import com.yangmf.mini_nodepad.ai.aiservice.PageAssistant;
 import com.yangmf.mini_nodepad.context.BaseContext;
 import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 @SpringBootTest

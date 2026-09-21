@@ -1,12 +1,12 @@
-package com.yangmf.mini_nodepad.service;
+package com.yangmf.mini_nodepad.ai.rag;
 
+import com.yangmf.mini_nodepad.ai.component.RerankService;
 import com.yangmf.mini_nodepad.exception.BusinessException;
+import com.yangmf.mini_nodepad.mapper.PageMapper;
 import com.yangmf.mini_nodepad.properties.QdrantProperties;
-import com.yangmf.mini_nodepad.utils.QdrantTemplate;
-import com.yangmf.mini_nodepad.utils.QdrantTemplate.VectorSearchResult;
+import com.yangmf.mini_nodepad.ai.rag.QdrantTemplate.VectorSearchResult;
 import lombok.Builder;
 import lombok.Data;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -20,18 +20,34 @@ public class PageRagRetrievalService {
 
     private final QdrantTemplate qdrantTemplate;
     private final QdrantProperties qdrantProperties;
+    private final PageMapper pageMapper;
+    private final RerankService rerankService;
 
     private static final String DEFAULT_COLLECTION_NAME = "dynamic_brain";
 
     @Value("${rag.max-results:5}")
     private int maxResults;
 
-    @Value("${rag.min-score-threshold:0.02}")
+    @Value("${rag.min-score-threshold:0.05}")
     private float minScoreThreshold;
 
-    public PageRagRetrievalService(QdrantTemplate qdrantTemplate, QdrantProperties qdrantProperties) {
+    @Value("${rag.rerank.enabled:true}")
+    private boolean rerankEnabled;
+
+    @Value("${rag.rerank.chunk-threshold:500}")
+    private int rerankChunkThreshold;
+
+    @Value("${rag.rerank.candidate-multiplier:3}")
+    private int rerankCandidateMultiplier;
+
+    public PageRagRetrievalService(QdrantTemplate qdrantTemplate,
+                                   QdrantProperties qdrantProperties,
+                                   PageMapper pageMapper,
+                                   RerankService rerankService) {
         this.qdrantTemplate = qdrantTemplate;
         this.qdrantProperties = qdrantProperties;
+        this.pageMapper = pageMapper;
+        this.rerankService = rerankService;
     }
 
     public List<RagChunk> retrieveChunks(String userQuery, String bookId,
@@ -49,11 +65,18 @@ public class PageRagRetrievalService {
         log.debug("RAG 检索请求 | bookId={}, pageFilterCount={}, query={}",
                 bookId, pageIds != null ? pageIds.size() : 0, userQuery);
 
+        int totalChunks = getTotalChunks(bookId);
+        boolean shouldRerank = rerankEnabled && totalChunks >= rerankChunkThreshold;
+        int retrievalLimit = shouldRerank ? maxResults * rerankCandidateMultiplier : maxResults;
+
+        log.info("RAG 检索策略 | bookId={}, totalChunks={}, rerank={}, retrievalLimit={}",
+                bookId, totalChunks, shouldRerank, retrievalLimit);
+
         String collectionName = DEFAULT_COLLECTION_NAME;
         List<VectorSearchResult> searchResults;
 
         try {
-            searchResults = qdrantTemplate.search(collectionName, userQuery, filters, maxResults);
+            searchResults = qdrantTemplate.search(collectionName, userQuery, filters, retrievalLimit);
         } catch (Exception e) {
             log.error("Qdrant 向量检索异常 | bookId={}, collection={}", bookId, collectionName, e);
             throw new BusinessException("RAG 知识检索失败，基础设施异常", e);
@@ -71,7 +94,7 @@ public class PageRagRetrievalService {
                             .map(r -> String.format("#%d score=%.4f text=%.30s",
                                     searchResults.indexOf(r) + 1, r.getScore(),
                                     r.getRawText() != null ? r.getRawText().replace("\n", " ") : "null"))
-                            .collect(java.util.stream.Collectors.joining(" | "))
+                            .collect(Collectors.joining(" | "))
             );
         }
 
@@ -101,8 +124,22 @@ public class PageRagRetrievalService {
                     .build());
         }
 
+        if (shouldRerank && chunks.size() > maxResults) {
+            log.info("触发 Rerank | chunks={}, maxResults={}", chunks.size(), maxResults);
+            chunks = rerankService.rerank(userQuery, chunks);
+        }
+
         log.info("RAG 检索完成 | 命中 {} 个有效切片, bookId={}", chunks.size(), bookId);
         return chunks;
+    }
+
+    private int getTotalChunks(String bookId) {
+        try {
+            return pageMapper.sumChunkCountByBookId(bookId);
+        } catch (Exception e) {
+            log.warn("查询 chunk 总数失败，跳过 Rerank 判断 | bookId={}", bookId, e);
+            return 0;
+        }
     }
 
     public List<RagChunk> retrieveChunks(String userQuery, String bookId, List<String> pageIds) {
@@ -119,7 +156,7 @@ public class PageRagRetrievalService {
         }
 
         StringBuilder sb = new StringBuilder();
-        sb.append("【重要指令】请严格基于以下提供的参考切片回答用户问题。如果参考切片的内容与用户的问题完全不相关（例如知识库是关于心理学，而用户问的是红烧肉做法），请直接回答：‘知识库中未找到与您问题相关的信息’，严禁自行编造或强行关联。\n\n");
+        sb.append("【重要指令】请严格基于以下提供的参考切片回答用户问题。如果参考切片的内容与用户的问题完全不相关（例如知识库是关于心理学，而用户问的是红烧肉做法），请直接回答：'知识库中未找到与您问题相关的信息'，严禁自行编造或强行关联。\n\n");
 
         for (RagChunk chunk : chunks) {
             sb.append("### 来源 [").append(chunk.getDisplayIndex()).append("] ");
@@ -173,6 +210,7 @@ public class PageRagRetrievalService {
         private Integer chunkIndex;
         private String embeddingId;
         private float score;
+        private Float rerankScore;
     }
 
     public record ProcessedResult(
@@ -181,8 +219,35 @@ public class PageRagRetrievalService {
             List<RagChunk> rawChunks,
             boolean hasResults
     ) {
+        public List<SourceReference> sourceReferences() {
+            if (rawChunks == null) return List.of();
+            return rawChunks.stream()
+                    .map(c -> new SourceReference(
+                            c.getDisplayIndex(),
+                            c.getTitle(),
+                            c.getPageId(),
+                            c.getChunkIndex(),
+                            truncate(c.getText(), 80)
+                    ))
+                    .toList();
+        }
+
         public static ProcessedResult empty() {
             return new ProcessedResult("", List.of(), List.of(), false);
         }
+    }
+
+    public record SourceReference(
+            int index,
+            String title,
+            String pageId,
+            Integer chunkIndex,
+            String textSnippet
+    ) {}
+
+    private static String truncate(String text, int maxLen) {
+        if (text == null) return "";
+        String clean = text.trim().replace("\n", " ");
+        return clean.length() > maxLen ? clean.substring(0, maxLen) + "..." : clean;
     }
 }
