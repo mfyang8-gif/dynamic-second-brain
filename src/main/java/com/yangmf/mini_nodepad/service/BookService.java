@@ -22,4 +22,6 @@ public interface BookService {
     void deleteBook(String id);
 
     BatchOperationResult deleteBooks(List<String> ids);
+
+    void verifyOwnership(String bookId, Long userId);
 }

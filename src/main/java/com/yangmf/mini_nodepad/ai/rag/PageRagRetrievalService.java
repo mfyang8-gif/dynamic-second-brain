@@ -220,7 +220,9 @@ public class PageRagRetrievalService {
             boolean hasResults
     ) {
         public List<SourceReference> sourceReferences() {
-            if (rawChunks == null) return List.of();
+            if (rawChunks == null) {
+                return List.of();
+            }
             return rawChunks.stream()
                     .map(c -> new SourceReference(
                             c.getDisplayIndex(),
@@ -246,7 +248,9 @@ public class PageRagRetrievalService {
     ) {}
 
     private static String truncate(String text, int maxLen) {
-        if (text == null) return "";
+        if (text == null) {
+            return "";
+        }
         String clean = text.trim().replace("\n", " ");
         return clean.length() > maxLen ? clean.substring(0, maxLen) + "..." : clean;
     }

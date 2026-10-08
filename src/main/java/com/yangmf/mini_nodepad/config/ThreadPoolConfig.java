@@ -16,6 +16,8 @@ public class ThreadPoolConfig {
 
     public static final String AI_TASK_EXECUTOR = "aiTaskExecutor";
 
+    public static final String STUDIO_TASK_EXECUTOR = "studioTaskExecutor";
+
     @Bean(AI_TASK_EXECUTOR)
     public Executor aiTaskExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
@@ -35,6 +37,20 @@ public class ThreadPoolConfig {
         
         executor.initialize();
         log.info(" AI 专属有界线程池 [{}] 初始化完成", AI_TASK_EXECUTOR);
+        return executor;
+    }
+
+
+    @Bean(STUDIO_TASK_EXECUTOR)
+    public Executor studioTaskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(3);
+        executor.setMaxPoolSize(8);
+        executor.setQueueCapacity(50);
+        executor.setThreadNamePrefix("Studio-Gen-");
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.initialize();
+        log.info("Studio 生成任务线程池 [{}] 初始化完成", STUDIO_TASK_EXECUTOR);
         return executor;
     }
 }

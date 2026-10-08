@@ -2,6 +2,8 @@ server:
   port: 8080
 
 spring:
+  config:
+    import: optional:classpath:application-local.yaml
   profiles:
     active: dev
   servlet:
@@ -10,21 +12,21 @@ spring:
       force: true
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://192.168.88.130:3306/dynamic_brain?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=utf-8&zeroDateTimeBehavior=convertToNull&useSSL=false&allowPublicKeyRetrieval=true
-    username: root
-    password: root
+    url: ${MYSQL_URL:jdbc:mysql://192.168.88.130:3306/dynamic_brain?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=utf-8&zeroDateTimeBehavior=convertToNull&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:root}
     hikari:
       connection-timeout: 10000
       maximum-pool-size: 5
   data:
     redis:
-      host: 192.168.88.130
-      port: 6380
-      password:
+      host: ${REDIS_HOST:192.168.88.130}
+      port: ${REDIS_PORT:6380}
+      password: ${REDIS_PASSWORD:}
       database: 0
       timeout: 10000ms
     qdrant:
-      host: 192.168.88.130
+      host: ${QDRANT_HOST:192.168.88.130}
       port: 6334
       http-port: 6333
       use-tls: false
@@ -46,32 +48,22 @@ spring:
         add-mappings: true
 mfyang:
   jwt:
-    admin-secret-key: this-is-a-secure-admin-secret-key-at-least-32-chars
-
+    admin-secret-key: ${JWT_ADMIN_SECRET:this-is-a-secure-admin-secret-key-at-least-32-chars}
     admin-ttl: 7200000
-
     admin-token-name: token
-    user-secret-key: this-is-a-secure-user-secret-key-at-least-32-chars
+    user-secret-key: ${JWT_USER_SECRET:this-is-a-secure-user-secret-key-at-least-32-chars}
     user-ttl: 7200000
     user-token-name: authorization
+  alioss:
+    endpoint: ${ALIYUN_OSS_ENDPOINT:oss-cn-beijing.aliyuncs.com}
+    access-key-id: ${ALIYUN_OSS_ACCESS_KEY_ID}
+    access-key-secret: ${ALIYUN_OSS_ACCESS_KEY_SECRET}
+    bucket-name: ${ALIYUN_OSS_BUCKET:mini-notepad}
 # LangChain4j
 langchain4j:
   open-ai:
-    #chat-model:
-    # api-key: sk-f38e965c0f724bdda338d58711de2770
-    # model-name: deepseek-chat
-    #base-url: https://api.deepseek.com
-    #log-requests: true
-    #log-responses: true
-    #    chat-model:
-    #     api-key: sk-770db1ffaa7e4fff80ed1f95259b121f
-    #     model-name: qwen3.5-plus
-    #     base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
-    #     log-requests: true
-    #     log-responses: true
-    #     timeout: 60
     streaming-chat-model:
-      api-key: 2f2c5560-2549-47ce-8a73-5b39e6b7a455
+      api-key: ${VOLC_API_KEY}
       model-name: doubao-seed-2-0-pro-260215
       base-url: https://ark.cn-beijing.volces.com/api/v3
       log-requests: true
@@ -81,7 +73,7 @@ langchain4j:
       max-tokens: 8192
       temperature: 0.7
     chat-model:
-      api-key: sk-f38e965c0f724bdda338d58711de2770
+      api-key: ${DEEPSEEK_API_KEY}
       model-name: deepseek-v4-flash
       base-url: https://api.deepseek.com
       log-requests: true
@@ -90,7 +82,7 @@ langchain4j:
       streaming: true
       temperature: 0.7
     embedding-model:
-      api-key: sk-770db1ffaa7e4fff80ed1f95259b121f
+      api-key: ${DASHSCOPE_API_KEY}
       model-name: text-embedding-v4
       base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
       log-requests: true
@@ -99,7 +91,7 @@ langchain4j:
   community:
     dashscope:
       chat-model:
-        api-key: sk-770db1ffaa7e4fff80ed1f95259b121f
+        api-key: ${DASHSCOPE_API_KEY}
         model-name: qwen-turbo
 
 
@@ -137,7 +129,7 @@ rag:
     top-n: 5
     candidate-multiplier: 3
     base-url: https://llm-c36pjigszb7ajl5e.cn-beijing.maas.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
-    api-key: sk-770db1ffaa7e4fff80ed1f95259b121f
+    api-key: ${RERANK_API_KEY}
     model-name: qwen3.7-text-rerank
 # 输入清洗长度限制
 guard:
@@ -160,6 +152,8 @@ chat:
     max-messages: 6
     summary-interval: 6
     summary-expire-days: 30
+  suggestion:
+    max-answer-length: 500
 
 # Qdrant 向量检索阈值配置
 qdrant:
@@ -167,10 +161,17 @@ qdrant:
     score-threshold: 0.30
   sparse:
     score-threshold: 1.0
-
+workspace:
+  sse:
+    timeout: 3600000
+    heartbeat-interval-seconds: 15
 mcp:
   server:
     search:
       base-url: https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp
   aliyun:
-    api-key: sk-770db1ffaa7e4fff80ed1f95259b121f
+    api-key: ${MCP_ALIYUN_API_KEY}
+
+studio:
+  pandoc:
+    api-url: ${PANDOC_API_URL:http://192.168.88.130:8000/api/convert}

@@ -29,6 +29,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.FluxSink;
 
 import java.net.SocketTimeoutException;
 import java.util.LinkedHashMap;
@@ -36,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
 @Service
@@ -54,6 +56,7 @@ public class ChatStreamService {
     private final IntentRouterService intentRouterService;
     private final ChatSummaryService chatSummaryService;
     private final ChatMemoryProvider chatMemoryProvider;
+    private final SuggestionService suggestionService; // [CHANGED] 新增：智能追问服务
 
     @Value("${chat.title-max-length:50}")
     private int titleMaxLength;
@@ -81,7 +84,8 @@ public class ChatStreamService {
                              QueryRewriteService queryRewriteService,
                              IntentRouterService intentRouterService,
                              ChatSummaryService chatSummaryService,
-                             ChatMemoryProvider chatMemoryProvider) {
+                             ChatMemoryProvider chatMemoryProvider,
+                             SuggestionService suggestionService) { // [CHANGED] 新增构造器参数
         this.mainChatAssistant = mainChatAssistant;
         this.pageRagRetrievalService = pageRagRetrievalService;
         this.chatConfigService = chatConfigService;
@@ -95,6 +99,7 @@ public class ChatStreamService {
         this.intentRouterService = intentRouterService;
         this.chatSummaryService = chatSummaryService;
         this.chatMemoryProvider = chatMemoryProvider;
+        this.suggestionService = suggestionService; // [CHANGED] 新增赋值
     }
 
     public Flux<ChatStreamEvent> chatStream(BookChatDTO dto) {
@@ -151,18 +156,32 @@ public class ChatStreamService {
         TokenStream tokenStream = mainChatAssistant.chat(sessionId, historySummary, question);
         StringBuilder fullResponse = new StringBuilder();
         ThinkingTagFilter tagFilter = new ThinkingTagFilter();
+        AtomicBoolean aborted = new AtomicBoolean(false);
 
         tokenStream
                 .onPartialResponse(token -> {
-                    if (!sink.isCancelled()) {
-                        fullResponse.append(token);
-                        String visible = tagFilter.filter(token);
-                        if (!visible.isEmpty()) {
-                            sink.next(messageEvent(visible));
+                    if (sink.isCancelled()) {
+                        if (aborted.compareAndSet(false, true)) {
+                            log.info("用户主动中断闲聊，硬中断 LLM 流 | sessionId={}, partialLength={}",
+                                    sessionId, fullResponse.length());
+                            if (!fullResponse.isEmpty()) {
+                                persistMessages(sessionId, question,
+                                        fullResponse + "\n\n*[用户已中断回答]*", List.of());
+                            }
+                            throw new RuntimeException("CLIENT_ABORTED");
                         }
+                        return;
+                    }
+                    fullResponse.append(token);
+                    String visible = tagFilter.filter(token);
+                    if (!visible.isEmpty()) {
+                        sink.next(messageEvent(visible));
                     }
                 })
                 .onCompleteResponse(response -> {
+                    if (aborted.get()) {
+                        return;
+                    }
                     try {
                         if (sink.isCancelled()) {
                             log.warn("流式对话被客户端中止 | sessionId={}", sessionId);
@@ -178,6 +197,10 @@ public class ChatStreamService {
                     }
                 })
                 .onError(error -> {
+                    if (aborted.get() || "CLIENT_ABORTED".equals(error.getMessage())) {
+                        log.debug("LLM HTTP 流已通过异常被强行斩断 | sessionId={}", sessionId);
+                        return;
+                    }
                     if (!sink.isCancelled()) {
                         handleLlmError(sessionId, error, sink);
                     }
@@ -283,18 +306,32 @@ public class ChatStreamService {
 
         StringBuilder fullResponse = new StringBuilder();
         ThinkingTagFilter tagFilter = new ThinkingTagFilter();
+        AtomicBoolean aborted = new AtomicBoolean(false);
 
         tokenStream
                 .onPartialResponse(token -> {
-                    if (!sink.isCancelled()) {
-                        fullResponse.append(token);
-                        String visible = tagFilter.filter(token);
-                        if (!visible.isEmpty()) {
-                            sink.next(messageEvent(visible));
+                    if (sink.isCancelled()) {
+                        if (aborted.compareAndSet(false, true)) {
+                            log.info("用户主动中断回答，硬中断 LLM 流 | sessionId={}, partialLength={}",
+                                    sessionId, fullResponse.length());
+                            if (!fullResponse.isEmpty()) {
+                                persistMessages(sessionId, sanitizedQuestion,
+                                        fullResponse + "\n\n*[用户已中断回答]*", ragResult.sourcePageIds());
+                            }
+                            throw new RuntimeException("CLIENT_ABORTED");
                         }
+                        return;
+                    }
+                    fullResponse.append(token);
+                    String visible = tagFilter.filter(token);
+                    if (!visible.isEmpty()) {
+                        sink.next(messageEvent(visible));
                     }
                 })
                 .onCompleteResponse(response -> {
+                    if (aborted.get()) {
+                        return;
+                    }
                     try {
                         if (sink.isCancelled()) {
                             log.warn("流式对话被客户端中止 | sessionId={}", sessionId);
@@ -304,18 +341,48 @@ public class ChatStreamService {
                         sink.next(doneEvent(ragResult));
                         persistMessages(sessionId, sanitizedQuestion, fullResponse.toString(), sourcePageIds);
                         chatSummaryService.triggerAsyncSummarization(sessionId);
+                        triggerSuggestionAsync(sink, sessionId, sanitizedQuestion, fullResponse.toString());
                     } catch (Exception e) {
                         log.error("流完成后处理异常 | sessionId={}", sessionId, e);
-                    } finally {
                         sink.complete();
                     }
                 })
                 .onError(error -> {
+                    if (aborted.get() || "CLIENT_ABORTED".equals(error.getMessage())) {
+                        log.debug("LLM HTTP 流已通过异常被强行斩断 | sessionId={}", sessionId);
+                        return;
+                    }
                     if (!sink.isCancelled()) {
                         handleLlmError(sessionId, error, sink);
                     }
                 })
                 .start();
+    }
+
+
+
+    // ==================== 智能追问（Piggybacking on SSE） ====================
+    // [CHANGED] 整个区块为新增
+
+    private void triggerSuggestionAsync(FluxSink<ChatStreamEvent> sink,
+                                        String sessionId, String question, String fullAnswer) {
+        Thread.startVirtualThread(() -> {
+            try {
+                if (sink.isCancelled()) {
+                    return;
+                }
+                List<String> suggestions = suggestionService.generate(question, fullAnswer);
+                if (!sink.isCancelled() && !suggestions.isEmpty()) {
+                    sink.next(suggestionsEvent(suggestions));
+                }
+            } catch (Exception e) {
+                log.warn("追问建议异步生成失败 | sessionId={}", sessionId, e);
+            } finally {
+                if (!sink.isCancelled()) {
+                    sink.complete();
+                }
+            }
+        });
     }
 
     // ==================== 多轮对话上下文提取（供 QueryRewrite 指代消解） ====================
@@ -503,6 +570,15 @@ public class ChatStreamService {
             ));
         } catch (JsonProcessingException e) {
             return new ChatStreamEvent("error", "{\"code\":\"SYSTEM_ERROR\",\"message\":\"未知错误\"}");
+        }
+    }
+
+    // [CHANGED] 新增：构建 suggestions SSE 事件
+    private ChatStreamEvent suggestionsEvent(List<String> suggestions) {
+        try {
+            return new ChatStreamEvent("suggestions", objectMapper.writeValueAsString(suggestions));
+        } catch (JsonProcessingException e) {
+            return new ChatStreamEvent("suggestions", "[]");
         }
     }
 

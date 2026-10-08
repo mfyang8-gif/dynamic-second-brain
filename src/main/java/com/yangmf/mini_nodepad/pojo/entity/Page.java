@@ -1,14 +1,18 @@
 package com.yangmf.mini_nodepad.pojo.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.yangmf.mini_nodepad.enums.AiProcessStatusEnum;
 import com.yangmf.mini_nodepad.enums.SourceTypeEnum;
+import com.yangmf.mini_nodepad.json.JsonArrayTypeHandler;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import java.util.List;
+
 
 import java.io.Serializable;
 import java.time.LocalDateTime;
@@ -42,6 +46,10 @@ public class Page implements Serializable {
 
     @Schema(description = "向量分块数量")
     private Integer chunkCount;
+
+    @TableField(typeHandler = JsonArrayTypeHandler.class)
+    @Schema(description = "AI预生成关键词数组")
+    private List<String> keywords;
 
     @Schema(description = "是否开启AI自动清洗 0-关闭 1-开启")
     private Integer autoOptimize;

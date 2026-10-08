@@ -80,7 +80,49 @@ public class AssistantConfig {
                 .build();
     }
 
+    @Bean
+    public SuggestionAssistant suggestionAssistant() {
+        return AiServices.builder(SuggestionAssistant.class)
+                .chatModel(qwenChatModel)
+                .build();
+    }
 
+
+
+    @Bean
+    public QuizStudioAssistant quizStudioAssistant() {
+        return AiServices.builder(QuizStudioAssistant.class)
+                .chatModel(qwenChatModel)
+                .build();
+    }
+
+    @Bean
+    public FlashcardStudioAssistant flashcardStudioAssistant() {
+        return AiServices.builder(FlashcardStudioAssistant.class)
+                .chatModel(qwenChatModel)
+                .build();
+    }
+
+    @Bean
+    public MindmapStudioAssistant mindmapStudioAssistant() {
+        return AiServices.builder(MindmapStudioAssistant.class)
+                .chatModel(qwenChatModel)
+                .build();
+    }
+
+    @Bean
+    public ReportStudioAssistant reportStudioAssistant() {
+        return AiServices.builder(ReportStudioAssistant.class)
+                .chatModel(qwenChatModel)
+                .build();
+    }
+
+    @Bean
+    public PresentationStudioAssistant presentationStudioAssistant() {
+        return AiServices.builder(PresentationStudioAssistant.class)
+                .chatModel(qwenChatModel)
+                .build();
+    }
 
 
 }

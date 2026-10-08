@@ -8,6 +8,7 @@ import com.github.pagehelper.PageInfo;
 import com.yangmf.mini_nodepad.context.BaseContext;
 import com.yangmf.mini_nodepad.converter.BookConverter;
 import com.yangmf.mini_nodepad.exception.ForbiddenException;
+import com.yangmf.mini_nodepad.exception.ResourceNotFoundException;
 import com.yangmf.mini_nodepad.mapper.BookMapper;
 import com.yangmf.mini_nodepad.mapper.PageMapper;
 import com.yangmf.mini_nodepad.pojo.dto.BookCreateDTO;
@@ -135,6 +136,17 @@ public class BookServiceImpl extends ServiceImpl<BookMapper, Book> implements Bo
         return BatchOperationResult.of(ids.size(), affected);
     }
 
+    @Override
+    public void verifyOwnership(String bookId, Long userId) {
+        Book book = bookMapper.selectById(bookId);
+        if (book == null || book.getDeleted() != null && book.getDeleted() == 1) {
+            throw new ResourceNotFoundException("知识库不存在");
+        }
+        if (!String.valueOf(userId).equals(book.getUserId())) {
+            throw new ForbiddenException("无权操作该知识库");
+        }
+    }
+
     // ==================== 私有方法 ====================
 
     private String getCurrentUserId() {
@@ -169,4 +181,6 @@ public class BookServiceImpl extends ServiceImpl<BookMapper, Book> implements Bo
                 .createdAt(book.getCreatedAt())
                 .build();
     }
+
+
 }
