@@ -1,8 +1,9 @@
 package com.yangmf.mini_nodepad.utils;
 
+import com.aliyun.oss.ClientException;
+import com.aliyun.oss.HttpMethod;
 import com.aliyun.oss.OSS;
 import com.aliyun.oss.OSSException;
-import com.aliyun.oss.ClientException;
 import com.yangmf.mini_nodepad.exception.BusinessException;
 import com.yangmf.mini_nodepad.properties.AliOssProperties;
 import lombok.RequiredArgsConstructor;
@@ -11,6 +12,9 @@ import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.net.URL;
+import java.util.Calendar;
+import java.util.Date;
 import java.util.UUID;
 
 @Slf4j
@@ -48,6 +52,30 @@ public class AliOssUtil {
             extension = originalFilename.substring(originalFilename.lastIndexOf("."));
         }
         return UUID.randomUUID().toString().replace("-", "") + extension;
+    }
+
+    /**
+     * 生成带签名的临时访问 URL（有效期取 mfyang.alioss.presign-expire-hours，默认 2 小时）。
+     * 用于知识源文件等私密对象：链接到期自动失效，规避公共读直链的永久泄露风险。
+     */
+    public String generatePresignedUrl(String objectName) {
+        Integer hours = aliOssProperties.getPresignExpireHours();
+        return generatePresignedUrl(objectName, hours == null ? 2 : hours);
+    }
+
+    public String generatePresignedUrl(String objectName, int expireHours) {
+        String bucketName = aliOssProperties.getBucketName();
+        try {
+            Calendar calendar = Calendar.getInstance();
+            calendar.add(Calendar.HOUR_OF_DAY, expireHours);
+            Date expiration = calendar.getTime();
+            URL url = ossClient.generatePresignedUrl(bucketName, objectName, expiration, HttpMethod.GET);
+            log.info("签名 URL 生成成功 | objectName={}, 有效期至={}", objectName, expiration);
+            return url.toString();
+        } catch (OSSException | ClientException e) {
+            log.error("生成签名 URL 失败 | objectName={}, msg={}", objectName, e.getMessage());
+            throw new BusinessException("生成文件访问链接失败: " + e.getMessage(), e);
+        }
     }
 
     public void deleteFile(String objectName) {

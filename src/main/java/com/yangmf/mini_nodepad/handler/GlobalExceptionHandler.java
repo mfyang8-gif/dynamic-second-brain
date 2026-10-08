@@ -11,6 +11,7 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @Slf4j
@@ -94,6 +95,12 @@ public class GlobalExceptionHandler {
         log.warn("自定义异常 | status={}, message={}", e.getStatus(), e.getMessage());
         return ResponseEntity.status(e.getStatus())
                 .body(Result.error(e.getStatus().value(), e.getMessage(), getRequestId(request)));
+    }
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<Result<Void>> handleMaxUploadSizeExceededException(MaxUploadSizeExceededException e, HttpServletRequest request) {
+        log.warn("上传文件超出容器限制 | {}", e.getMessage());
+        return ResponseEntity.badRequest()
+                .body(Result.error(400, "上传文件超出大小限制", getRequestId(request)));
     }
 
     @ExceptionHandler(RuntimeException.class)

@@ -7,6 +7,11 @@ spring:
   profiles:
     active: dev
   servlet:
+    multipart:
+      # 容器上限刻意大于业务层最大限制（SOURCE=20MB），
+      # 让业务超限走 ValidationException 友好报错，MaxUploadSizeExceededException 仅兜底防恶意大包
+      max-file-size: 25MB
+      max-request-size: 30MB
     encoding:
       charset: UTF-8
       force: true
@@ -59,6 +64,7 @@ mfyang:
     access-key-id: ${ALIYUN_OSS_ACCESS_KEY_ID}
     access-key-secret: ${ALIYUN_OSS_ACCESS_KEY_SECRET}
     bucket-name: ${ALIYUN_OSS_BUCKET:mini-notepad}
+    presign-expire-hours: 2
 # LangChain4j
 langchain4j:
   open-ai:

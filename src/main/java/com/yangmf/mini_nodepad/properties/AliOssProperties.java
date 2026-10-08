@@ -13,4 +13,7 @@ public class AliOssProperties {
     private String accessKeyId;
     private String accessKeySecret;
     private String bucketName;
+
+    /** 私有文件签名 URL 有效期（小时），默认 2 小时 */
+    private Integer presignExpireHours = 2;
 }
