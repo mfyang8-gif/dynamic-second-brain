@@ -100,8 +100,12 @@ Node 22 自带 `WebSocket`。测试账号 `demo / demo12345`，token 存 localSt
 - 两个 docs（后端 `Mini_Nodepad/docs`、前端 `mini-notebooklm-web/docs`）各自只留**现行**文档，
   各有一份 `文档索引.md` 登记「待办 / 现行 / 归档」三张表；已完成/失效移到同目录 `归档/`。
 - 新增文档顺手在 `文档索引.md` 登记一行。
-- `Mini_Nodepad/docs/后端待办清单.md` 三项（引用原文 / 重新生成 / 赞踩）**2026-10-13 复核已全部实现**
-  （`ChunkReferenceController`/`RegenerateDTO`/`MessageFeedback`，随 `c929737`）→ **该清单可销项**。
+- `Mini_Nodepad/docs/后端待办清单.md` 三项（引用原文 / 重新生成 / 赞踩）**已全部实现**
+  （随 `c929737`）→ **2026-10-13 已销项、文件移入 `归档/`**。实际路径与原建议签名不同：
+  引用原文 = `GET /api/v1/knowledge/pages/{pageId}/chunks/{chunkIndex}/context`；
+  重新生成 = `POST /api/v1/sessions/{sid}/messages/{mid}/regenerate`（两步换 `instructionToken`）。
+- 2026-10-13 又归档 4 份被取代设计稿（Phase4 草案/v2/v3-定稿、双路并发重构方案-待审核）
+  → 现行 docs 收敛为 7 份内容文档 + 索引。
 
 ## 七、对话流：双路并发 + 两段流式（2026-10-12 落地）
 
@@ -182,16 +186,29 @@ DB CAS 占位（废 Redis setnx，CAS 必须在 POST 前）／异步对账防死
 - 既有失败测试（与 B1 无关，全量 47 项里 3 项）：`AliOssUtilTest.testUploadInvalidBucket`、
   `PageServiceImplTest.testGenerateTitlePreview_ShortText_ShouldThrowException`、`SemanticPipelineDiagnosticTest.diagnose`（实机诊断类）。
 
-### 测试方案的落点（`docs/测试方案-B1写入链.md`，2026-10-13）
+### 测试方案的落点（**`docs/测试方案-后端全链路测试与量化基准.md`** = v2，2026-10-13 重构）
 
-分层 **L0 纯函数 / L1 组件 Mockito / L2 真环境集成 / L3 故障注入 / L4 附录 D 取证**，约 90+ 用例。
+v1（`测试方案-B1写入链.md`）已入 `归档/`。v2 相对 v1 的三处实质变化：
+① 新增 **HTTP 黑盒模态**（`RANDOM_PORT` + 真拦截器链，与浏览器同链路，**不占 8082**）；
+② 新增 **L5 量化层**（每条用例必须打印数字 + 断言区间，布尔断言回答不了"快了多少"）；
+③ 覆盖扩到 B1 之外（Phase 3 双路检索/两段流式/SSE、记忆、跨租户隔离）。
+
+分层 **L0 纯函数 / L1 组件 Mockito / L2 HTTP 黑盒 / L3 真环境集成 / L4 混沌 / L5 量化**，约 100+ 用例。
 **`pom.xml` 只有 `spring-boot-starter-test`**（无 Testcontainers / Awaitility / H2）→ 集成测试只能打真环境，
 必须自带夹具清理 + `Assumptions` 断网门闸 + `@Tag("integration")` 分层（否则 `mvn test` 在无网环境必红）。
 
-三条「不写就会重犯」的断言（本方案独有，别再丢）：
+★ **HTTP 路线已证明可跑**：`ApiHttpSmokeTest`（`@Tag("api")`）**6/6 通过、32.3 秒** —— 真容器 + 真 JWT/Redis。
+它顺带抓到既有 **P0 安全洞**：`GET /api/v1/test/mock-login` 无 `@Profile` 且不在拦截器 `addPathPatterns` 里
+→ **任何 profile 下无需登录即可签发 `userId=1` 的 token**。已写成"钉子测试"，加固后该用例会红。
+
+三条「不写就会重犯」的断言（v1 独有，别再丢）：
 1. ★ 高危词表**混入空字符串** → `contains("")` 恒 true → 所有消息都走快通道、优先级机制彻底失效。
 2. ★ **静态断言**：两条对账 SQL 必含 `NOT EXISTS(审计表)`；源码里**零** `LocalDateTime.MIN` 进 SQL 参数。
 3. ★ **反向断言**：旧链 `semantic.scan.queue` 的 args **必须为空**（其消费者有 catch-all，加 DLX 是死代码）。
+
+量化读数入口：`/actuator/metrics` 免登可读（**只暴露 metrics + health**）。注意 `retrieval.*` 是**惰性注册**的
+→ 必须先跑一轮对话再读，断言要写"键存在或读数≥0"，**不能**写"列表里必须有它"。
+`graphiti.*` 只有 2 个 Gauge 在启动期注册（`backpressure.active`、`write.queue.depth`）。
 
 集成测试必须加 `-Djava.io.tmpdir=<可写目录>`，否则 surefire 建不出临时目录 → 测试 JVM 的 stdout 整段丢失。
 
