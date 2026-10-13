@@ -15,6 +15,10 @@
 - **Java/Maven**：`JAVA_HOME=D:\java`；Maven 3.9.4 在 `/d/maven/apache-maven-3.9.4-bin/apache-maven-3.9.4/bin`。
   离线编译 `mvn -o -DskipTests compile`。跑单个测试要**完整生命周期**
   （`mvn -o -Dtest=X -Dsurefire.failIfNoSpecifiedTests=false test`），直接 `surefire:test` 不编译测试类。
+- ⚠️ **`env -u XXX ... mvn ... > log` 在前台会把输出整段吞掉（log 为 0 字节而 rc=0）**
+  —— 2026-10-13 实测，同一个命令在 `run_in_background: true` 下却正常。
+  → 前台跑 Maven 且要落日志时，**改用 `export JAVA_HOME=... ; export PATH=... ; unset http_proxy ...`
+  再直接调 `mvn`**（这个形式实测正常）。看到「rc=0 但日志 0 字节」先怀疑这个，别怀疑 Maven。
 - ⚠️ **同一文件多处 Edit 并行下发会互相覆盖**（只最后一个生效，但都报 success）→ 必须**串行**改；
   改完回读产物核对（typecheck/build 覆盖不到 CSS 变量值）。
 - **写注释规矩**：CSS 注释里**不要有 `*/`**；HTML 注释里**不要有连续两个短横线**（都真踩过）。
@@ -211,6 +215,29 @@ v1（`测试方案-B1写入链.md`）已入 `归档/`。v2 相对 v1 的三处�
 `graphiti.*` 只有 2 个 Gauge 在启动期注册（`backpressure.active`、`write.queue.depth`）。
 
 集成测试必须加 `-Djava.io.tmpdir=<可写目录>`，否则 surefire 建不出临时目录 → 测试 JVM 的 stdout 整段丢失。
+
+**T1 已落地（2026-10-13，`16511d0`）**：`GraphitiErrorClassifierTest`(57) +
+`GraphitiWriteMessageTest`(28) + `GraphitiStaticGuardTest`(19) = **101 用例全绿，单轮 <0.5s**。
+★ 新形态 **静态约束测试**：读源码文本做断言（剥注释），专拦「编译通过、启动成功、只在特定输入下静默失效」
+的结构性回归 —— `LocalDateTime.MIN` 不进 SQL、审计表必写 COLLATE、三条取数 SQL 必含
+`NOT EXISTS(审计表)`（恰好 3 次，用 assertEquals 制造有意摩擦）、新链零 Redis 去重锁、
+CAS 在 POST 前、可重试失败必回滚、旧链 `semantic.scan.queue` args 必为空、词表不得有空项。
+
+写这类断言时的两个自踩坑（别重犯）：
+1. **别断言三个分类谓词「互斥」**：`isRetryable` 刻意是「非毒消息」的**超集**，
+   限流同时 `isRateLimited` 与 `isRetryable` —— 这条包含关系正是铁律 3 的落点，写成互斥就错了。
+2. **setPriority 断言的适用范围要限定**：只有声明了 `x-max-priority` 的目的地才需要。
+   `graphiti.scan.delay.queue` 是 TTL 延时队列、无优先级，给它设优先级无效 —— 过宽的断言会误报。
+
+本轮生成的三个发现（**未改产品代码**，按「不扩大任务范围」处理）：
+1. 字符截断逻辑在**三处**各写一遍（`ScanConsumer.budget` / `ReplayJob.budget` / `ScanProducer` 内联），
+   常量已统一，但截断体是三份副本；已用静态断言钉住「必须引用同一常量」。
+2. 三处截断都用 `substring(0, max)`，**可能切断代理对**（emoji 落边界 → 孤立高代理；
+   影响有限：UTF-8 编码降级为替换字符、不抛异常）。
+3. 对账 SQL 的 `INTERVAL 3 MINUTE` 是**硬编码魔数**，与 `graphiti.confirm.interval-ms` 无代码级关联。
+
+**Java lambda 捕获坑**（写参数化/循环断言必踩）：for 循环变量与循环内被重新赋值的局部变量
+**不是 effectively-final**，进 lambda 会编译失败 → 先复制成 `final` 再断言。
 
 
 ## 九、Graphiti 服务端 / VM / Docker（实机实测，非推测）
