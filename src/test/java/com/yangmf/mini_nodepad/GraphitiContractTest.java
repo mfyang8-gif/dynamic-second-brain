@@ -127,7 +127,7 @@ class GraphitiContractTest {
         stubHandler = path -> new StubResponse(200, "{\"message\":\"ok\",\"success\":true}");
 
         OffsetDateTime ts = OffsetDateTime.parse("2026-10-13T01:02:03Z");
-        GraphitiMessage message = GraphitiMessage.forChatMessage(101L, "我偏好 Go 语言",
+        GraphitiMessage message = GraphitiMessage.forChatMessage("101", "我偏好 Go 语言",
                 GraphitiRoleType.USER, ts, "用户与助手的对话记录");
 
         GraphitiWriteAck ack = newClient().write(3L, message);
@@ -168,7 +168,7 @@ class GraphitiContractTest {
     void timestampIsIsoNotEpoch() throws Exception {
         stubHandler = path -> new StubResponse(200, "{\"success\":true}");
 
-        GraphitiMessage message = GraphitiMessage.forChatMessage(7L, "内容",
+        GraphitiMessage message = GraphitiMessage.forChatMessage("7", "内容",
                 GraphitiRoleType.USER, OffsetDateTime.parse("2026-10-13T01:02:03Z"), null);
         newClient().write(1L, message);
 
@@ -332,7 +332,7 @@ class GraphitiContractTest {
 
         // 单条消息体积上限（防上游把整篇文档当对话投递）
         assertThrows(IllegalArgumentException.class, () -> GraphitiMessage.forChatMessage(
-                1L, "字".repeat(8001), GraphitiRoleType.USER, OffsetDateTime.now(), null));
+                "1", "字".repeat(8001), GraphitiRoleType.USER, OffsetDateTime.now(), null));
     }
 
     // ==================== 时间格式与错误分支 ====================
@@ -377,7 +377,7 @@ class GraphitiContractTest {
 
         stubHandler = path -> new StubResponse(422, "{\"detail\":\"validation error\"}");
         GraphitiClientException invalid = assertThrows(GraphitiClientException.class,
-                () -> newClient().write(3L, GraphitiMessage.forChatMessage(1L, "内容",
+                () -> newClient().write(3L, GraphitiMessage.forChatMessage("1", "内容",
                         GraphitiRoleType.USER, OffsetDateTime.now(), null)));
         assertEquals(422, invalid.httpStatus());
         assertFalse(invalid.isRateLimitedOrQuota(), "422 不该走长退避");
@@ -390,7 +390,7 @@ class GraphitiContractTest {
     @DisplayName("写入响应缺 success 字段时视为未受理")
     void writeWithoutSuccessFieldIsNotAccepted() {
         stubHandler = path -> new StubResponse(200, "{\"message\":\"queued\"}");
-        GraphitiWriteAck ack = newClient().write(3L, GraphitiMessage.forChatMessage(1L, "内容",
+        GraphitiWriteAck ack = newClient().write(3L, GraphitiMessage.forChatMessage("1", "内容",
                 GraphitiRoleType.USER, OffsetDateTime.now(), null));
         assertFalse(ack.accepted(), "缺少 success 不能当成功");
     }
@@ -450,7 +450,7 @@ class GraphitiContractTest {
     @DisplayName("★ 写入请求体必须是 JSON，不能被 YamlHttpMessageConverter 抢走（真 bug 回归守卫）")
     void writeBodyIsJsonNotYaml() throws Exception {
         stubHandler = path -> new StubResponse(200, "{\"success\":true,\"message\":\"queued\"}");
-        newClient().write(3L, GraphitiMessage.forChatMessage(1L, "内容",
+        newClient().write(3L, GraphitiMessage.forChatMessage("1", "内容",
                 GraphitiRoleType.USER, OffsetDateTime.now(), null));
 
         String raw = REQUEST_BODIES.get(REQUEST_BODIES.size() - 1);
@@ -471,5 +471,28 @@ class GraphitiContractTest {
         String contentType = REQUEST_CONTENT_TYPES.get(REQUEST_CONTENT_TYPES.size() - 1);
         assertTrue(contentType.contains("json"),
                 "Content-Type 非 JSON，说明写入权被别的转换器抢走 → " + contentType);
+    }
+
+    @Test
+    @DisplayName("★ 确认锚点：cm_ + chatMessageId 与其逆运算严格互逆（主键是 VARCHAR 不是数值）")
+    void confirmAnchorRoundTrips() {
+        // chat_message.id 实测为 VARCHAR（IdType.ASSIGN_UUID）→ 契约层必须用 String
+        GraphitiMessage message = GraphitiMessage.forChatMessage("a1b2c3", "内容",
+                GraphitiRoleType.USER, OffsetDateTime.now(), null);
+        assertEquals("cm_a1b2c3", message.name(), "锚点格式是 B1 对账唯一的匹配依据");
+        assertEquals("a1b2c3", GraphitiMessage.chatMessageIdOf("cm_a1b2c3"));
+
+        // UUID 主键本身就带短横线，必须原样还原（不能做任何「清理」）
+        assertEquals("ab-cd-ef", GraphitiMessage.chatMessageIdOf("cm_ab-cd-ef"));
+
+        // ★ 前缀不匹配时必须返回 null，不能「静默 strip 掉前缀」：
+        //   否则对账会把 Graphiti 里别人的 name 当成 chat_message.id 去 UPDATE，
+        //   影响 0 行 → 该消息永远不会被标记 synced_at → 每轮都被判「投递失败」反复重投。
+        assertNull(GraphitiMessage.chatMessageIdOf("other_a1b2c3"));
+        assertNull(GraphitiMessage.chatMessageIdOf("cm_"));
+        assertNull(GraphitiMessage.chatMessageIdOf(null));
+
+        assertThrows(IllegalArgumentException.class, () -> GraphitiMessage.forChatMessage("  ", "内容",
+                GraphitiRoleType.USER, OffsetDateTime.now(), null));
     }
 }

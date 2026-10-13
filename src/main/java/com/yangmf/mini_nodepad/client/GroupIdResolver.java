@@ -37,4 +37,30 @@ public class GroupIdResolver {
         }
         return USER_GROUP_PREFIX + userId;
     }
+
+    /**
+     * 把库中的<b>字符串</b>用户主键严格解析为数值型（B1 新增）。
+     *
+     * <p>为什么需要这一步：本工程 {@code book.user_id} 的列类型是 <b>VARCHAR</b>
+     * （如实读 DDL 所得），而 {@code group_id} 的格式是 {@code user_{数值}} ——
+     * 两者必须显式转换，且转换失败<b>不能静默</b>。
+     *
+     * <p>★ 转换失败时返回 {@code null} 而不是抛异常：调用方（MQ 消费者 / 定时任务）
+     * 需要把「数据完整性损坏」与「网络抖动」区分开 —— 前者必须<b>隔离为终态</b>，
+     * 后者才该重试。若这里抛异常并被上层当成可重试异常，那条坏数据会被无限重投。
+     *
+     * @param raw 数据库里的字符串用户主键
+     * @return 数值型用户主键；{@code raw} 为空 / 非数字 / 非正数时返回 {@code null}
+     */
+    public static Long parseUserId(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            long value = Long.parseLong(raw.trim());
+            return value > 0 ? value : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
 }

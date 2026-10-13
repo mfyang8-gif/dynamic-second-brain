@@ -98,17 +98,37 @@ public record GraphitiMessage(
      * 服务端 uuid 事前不可知、事后难反查，「落库确认」根本写不出来（陷阱 33）。
      * 而 {@code name} 默认为空串、完全空闲，可写、可持久、可从 {@code /episodes} 读回。
      *
-     * @param chatMessageId 本地 chat_message 主键，不能为空
+     * <p>⚠️ 参数类型是 {@code String} 而不是数值型：本工程 {@code chat_message.id}
+     * 的列类型是 <b>VARCHAR</b>（{@code IdType.ASSIGN_UUID}），改用数值型会在
+     * 「B0 看着对、B1 联调必炸」的位置留下一个类型错配。
+     *
+     * @param chatMessageId 本地 chat_message 主键（UUID 字符串），不能为空
      */
-    public static GraphitiMessage forChatMessage(Long chatMessageId,
+    public static GraphitiMessage forChatMessage(String chatMessageId,
                                                  String content,
                                                  GraphitiRoleType roleType,
                                                  OffsetDateTime timestamp,
                                                  String sourceDescription) {
-        if (chatMessageId == null) {
+        if (chatMessageId == null || chatMessageId.isBlank()) {
             throw new IllegalArgumentException("chatMessageId 不能为空：落库确认锚点依赖它");
         }
         return new GraphitiMessage(content, null, CONFIRM_ANCHOR_PREFIX + chatMessageId,
                 roleType, DEFAULT_ROLE, timestamp, sourceDescription);
+    }
+
+    /**
+     * 从 {@code name} 锚点还原 {@code chat_message.id}（对账任务使用）。
+     *
+     * <p>与 {@link #forChatMessage} 互为逆运算：两侧必须<b>同时</b>改动，
+     * 否则对账会永远匹配不上、把所有消息都当成「投递失败」重投（暗雷 3）。
+     *
+     * @return 还原出的主键；{@code name} 不以锚点前缀开头时返回 {@code null}
+     */
+    public static String chatMessageIdOf(String name) {
+        if (name == null || !name.startsWith(CONFIRM_ANCHOR_PREFIX)) {
+            return null;
+        }
+        String id = name.substring(CONFIRM_ANCHOR_PREFIX.length());
+        return id.isBlank() ? null : id;
     }
 }

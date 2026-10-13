@@ -4,6 +4,9 @@ import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Graphiti 记忆微服务配置（Phase 4 · B0 契约层）。
  *
@@ -42,6 +45,12 @@ public class GraphitiProperties {
 
     private Timeout timeout = new Timeout();
 
+    private Confirm confirm = new Confirm();
+
+    private Replay replay = new Replay();
+
+    private Backpressure backpressure = new Backpressure();
+
     /** 写入链（MQ 消费侧）配置。 */
     @Data
     public static class Write {
@@ -54,6 +63,97 @@ public class GraphitiProperties {
          * 关闭时全部走规则快通道（高危词表 + 硬规则），不再调用 LLM 判定。
          */
         private boolean judgeEnabled = false;
+
+        /**
+         * 高危词表（纯规则，不调 LLM）：命中的轮次<b>绕过 5 分钟静默期立即投递</b>，
+         * 并以 {@code priority = 10} 插队。
+         *
+         * <p>为什么需要：健康/禁忌类事实（过敏、疾病、硬约束）若等到会话静默 5 分钟
+         * 才沉淀，用户下一句就可能已经需要它了 —— 这类事实的时效价值远高于普通偏好。
+         *
+         * <p>⚠️ 词表是<b>召回侧</b>的粗筛，不是判定替代品：命中只代表「优先投递」，
+         * 不代表「一定入图」（仍要过 MemorySignalJudge）。
+         */
+        private List<String> highRiskLexicon = new ArrayList<>();
+
+        /** 单轮扫描最多处理的 user 轮次数（防一次扫描把整段历史压给 LLM 判定）。 */
+        private int scanWindowLimit = 50;
+    }
+
+    /** 对账任务（GraphitiConfirmJob）配置 —— 只管「已投递但未确认落库」。 */
+    @Data
+    public static class Confirm {
+
+        private boolean enabled = true;
+
+        /** 执行间隔（毫秒）。默认 5 分钟。 */
+        private long intervalMs = 300_000L;
+
+        /** 单轮最多处理的确认目标数。 */
+        private int batchLimit = 100;
+
+        /**
+         * 未命中累计轮次上限；达上限即写审计表（CONFIRM_TIMEOUT）并停止重投。
+         *
+         * <p>★ 没有这个上限，「窗口足够大、但那条消息就是永远落不了库」的消息
+         * 会被每 5 分钟重投一次、永远重投下去 —— 上限 + 隔离是防无限重投的另一半。
+         */
+        private int maxRounds = 8;
+
+        /** 重投开始前的宽限轮次（落库本身 15~45s，别和落库延迟赛跑）。 */
+        private int replayAfterRounds = 2;
+
+        /**
+         * 动态 {@code last_n} 的保底值。
+         *
+         * <p>★ 严禁硬编码定值代替动态计算：用户在 5 分钟内连发 30 条短消息，
+         * 目标就会被挤出窗口 → 对账误判「投递失败」→ 重投 → 又「失败」→ 无限重投。
+         */
+        private int minLastN = 50;
+
+        /** 动态 {@code last_n} 的封顶值；超过则打 WARN（说明窗口设错或有异常流量）。 */
+        private int maxLastN = 500;
+    }
+
+    /** 补投任务（GraphitiReplayJob）配置 —— 只管「该投但没投出去」。 */
+    @Data
+    public static class Replay {
+
+        private boolean enabled = true;
+
+        /** 执行间隔（毫秒）。默认 10 分钟。 */
+        private long intervalMs = 600_000L;
+
+        /** 单轮最多补投条数。 */
+        private int batchLimit = 200;
+    }
+
+    /** 背压熔断（GraphitiBackpressureGuard）配置。 */
+    @Data
+    public static class Backpressure {
+
+        private boolean enabled = true;
+
+        /** 评估间隔（毫秒）。默认 30 秒。 */
+        private long evaluateIntervalMs = 30_000L;
+
+        /**
+         * 触发阈值：{@code write} + 三个 {@code retry} 队列的 ready 之和。
+         *
+         * <p>★★ 信号源<b>只允许</b>是 MQ 物理积压。用 MySQL 的「未确认数」做触发是错的：
+         * 可重试失败会回滚 {@code dispatched_at}，Graphiti 全挂时每一条都被回滚
+         * → 未确认数趋近 0 → <b>熔断器会报「系统无比健康」并继续猛灌</b>（暗雷 2）。
+         *
+         * <p>阈值必须显著小于「最大重试窗（30s + 2min + 10min ≈ 12.5min）内能被消费掉的消息量」——
+         * 否则消息会在熔断生效之前就耗尽重试、进 DLQ（终态）。
+         */
+        private int queueDepthThreshold = 50;
+
+        /** 恢复系数：积压降到「阈值 × 该系数」以下且持续一段时间才解冻。 */
+        private double recoveryFactor = 0.5;
+
+        /** 恢复所需的持续时长（毫秒）。默认 3 分钟。 */
+        private long recoveryHoldMs = 180_000L;
     }
 
     /** 召回链（在线路径）配置。 */

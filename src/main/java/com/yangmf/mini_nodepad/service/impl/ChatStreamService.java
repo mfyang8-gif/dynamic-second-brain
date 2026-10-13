@@ -17,6 +17,7 @@ import com.yangmf.mini_nodepad.exception.ForbiddenException;
 import com.yangmf.mini_nodepad.exception.MiniNotePadException;
 import com.yangmf.mini_nodepad.exception.ResourceNotFoundException;
 import com.yangmf.mini_nodepad.mapper.PageMapper;
+import com.yangmf.mini_nodepad.mq.GraphitiScanProducer;
 import com.yangmf.mini_nodepad.mq.SemanticScanProducer;
 import com.yangmf.mini_nodepad.pojo.dto.BookChatDTO;
 import com.yangmf.mini_nodepad.pojo.entity.Page;
@@ -90,6 +91,7 @@ public class ChatStreamService {
     private final SemanticMemoryService semanticMemoryService;
     private final PromptSanitizer promptSanitizer;
     private final SemanticScanProducer semanticScanProducer;
+    private final GraphitiScanProducer graphitiScanProducer;         // 2026-10-13：B1 写入链入口（含高危快通道）
     private final DualPathRetrievalService dualPathRetrievalService; // 2026-10-12：双路并发编排
     private final WebAugmentService webAugmentService;               // 2026-10-12：网页来源组装/引用生成
     private final RetrievalMetrics retrievalMetrics;                 // 2026-10-12：降级可观测性
@@ -155,6 +157,7 @@ public class ChatStreamService {
                              SemanticMemoryService semanticMemoryService,
                              PromptSanitizer promptSanitizer,
                              SemanticScanProducer semanticScanProducer,
+                             GraphitiScanProducer graphitiScanProducer,
                              DualPathRetrievalService dualPathRetrievalService,
                              WebAugmentService webAugmentService,
                              RetrievalMetrics retrievalMetrics) {
@@ -175,6 +178,7 @@ public class ChatStreamService {
         this.semanticMemoryService = semanticMemoryService;
         this.promptSanitizer = promptSanitizer;
         this.semanticScanProducer = semanticScanProducer;
+        this.graphitiScanProducer = graphitiScanProducer;
         this.dualPathRetrievalService = dualPathRetrievalService;
         this.webAugmentService = webAugmentService;
         this.retrievalMetrics = retrievalMetrics;
@@ -1083,11 +1087,14 @@ public class ChatStreamService {
         aiTaskExecutor.execute(() -> {
             BaseContext.setCurrentId(userId);
             String rowId = null;
+            // ★ B1 高危快通道需要「本轮 user 行的主键」（确认锚点 = "cm_" + 它）——
+            //   改造前这里的返回值被丢掉了，导致快通道无法拿到 messageId。
+            String userRowId = null;
             if (skipUserMessage) {
                 log.info("Regenerate 续接，跳过 user 消息落库（原始提问行未被截断） | sessionId={}", sessionId);
             } else {
                 try {
-                    chatSessionService.saveMessage(sessionId, "user", question, List.of(), List.of(), null);
+                    userRowId = chatSessionService.saveMessage(sessionId, "user", question, List.of(), List.of(), null);
                 } catch (Exception e) {
                     log.error("用户消息持久化失败 | sessionId={}", sessionId, e);
                 }
@@ -1108,6 +1115,17 @@ public class ChatStreamService {
             }
             // Phase 3：落库链路完成后为会话武装延时语义扫描（冷却锁自然去重，内部全捕获不影响主链路）
             semanticScanProducer.armSessionScan(sessionId, userId);
+
+            // Phase 4 · B1：高危快通道（纯规则、零 LLM，内部全捕获，绝不影响主链路）。
+            //   ① 命中词表 → 本轮 user 原文【立即投递】到 graphiti.write.queue，绕过 5 分钟 delay 队列；
+            //   ② ★ 它<b>不是</b>常规链路的替代品：命中后常规链路照旧武装，因此这条消息
+            //      「必然」会被投递两次 —— 防重完全由 GraphitiWriteConsumer 的 DB CAS 占位承担（铁律 1）。
+            //   ③ ★ 只对「本轮新落库的 user 行」投：Regenerate 续接时 userRowId 为 null，
+            //      那条原始提问早已投递过，再投一次只会白烧一次 CAS 并留下一条 CAS 失败日志。
+            //   ④ 与 armSessionScan 的相对顺序无关：两条路径互不依赖，各自幂等。
+            if (userRowId != null) {
+                graphitiScanProducer.dispatchHighRiskNow(sessionId, userRowId, question, userId);
+            }
         });
         return assistantRowId;
     }

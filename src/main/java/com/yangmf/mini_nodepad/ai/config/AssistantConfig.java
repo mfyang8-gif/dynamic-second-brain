@@ -140,6 +140,38 @@ public class AssistantConfig {
                 .build();
     }
 
+    /**
+     * 实质判定器（Phase 4 · B1 写入链的守门人）：与 {@code HabitJudge} 同源，<b>独立建实例</b>。
+     *
+     * <p>温度默认 0.0 —— 它是纯二值逻辑题（「这一轮值不值得沉淀」），不需要任何发散；
+     * 模型默认 qwen-turbo：判定只需要语义理解，不需要 qwen-plus 的抽取能力，
+     * 而它是<b>每次投递都要跑</b>的高频调用，成本敏感。
+     *
+     * <p>⚠️ 关断开关不在这里（{@code graphiti.write.judge-enabled} 由调用方
+     * {@code GraphitiScanConsumer} 判断）：Bean 永远存在，但可以不被调用 ——
+     * 用条件装配 {@code @ConditionalOnProperty} 会让「关闭判定器」连带改变 Bean 图，
+     * 而调用方本来就有一个「判定器关闭 = 全部放行」的显式分支，那才是可读的那条路。
+     *
+     * <p>API key 同样读 starter 已解析的配置项，缺失时降级共享 Bean 保启动。
+     */
+    @Bean
+    public MemorySignalJudge memorySignalJudge(
+            @Value("${langchain4j.community.dashscope.chat-model.api-key:}") String dashscopeApiKey,
+            @Value("${graphiti.write.judge-model-name:qwen-turbo}") String judgeModelName,
+            @Value("${graphiti.write.judge-temperature:0.0}") float judgeTemperature) {
+        dev.langchain4j.model.chat.ChatModel signalJudgeModel =
+                (dashscopeApiKey == null || dashscopeApiKey.isBlank())
+                        ? qwenChatModel
+                        : QwenChatModel.builder()
+                                .apiKey(dashscopeApiKey)
+                                .modelName(judgeModelName)
+                                .temperature(judgeTemperature)
+                                .build();
+        return AiServices.builder(MemorySignalJudge.class)
+                .chatModel(signalJudgeModel)
+                .build();
+    }
+
     @Bean
     public SuggestionAssistant suggestionAssistant() {
         return AiServices.builder(SuggestionAssistant.class)

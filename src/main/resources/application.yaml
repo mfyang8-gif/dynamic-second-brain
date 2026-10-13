@@ -278,6 +278,41 @@ graphiti:
   write:
     enabled: false                  # 写入链（MQ 消费侧）
     judge-enabled: false            # 实质判定走 LLM；关则全走规则快通道
+    judge-model-name: qwen-turbo    # 判定只需语义理解，不需要 qwen-plus 的抽取能力（高频调用，成本敏感）
+    judge-temperature: 0.0          # 纯二值逻辑题，零发散
+    # ★ 高危词表（纯规则、零 LLM）：命中的轮次绕过 5 分钟 delay 队列【立即投递】，
+    #   并以 priority=10 插队。空列表 = 快通道关闭（不是「命中一切」）。
+    #   命中只代表「优先投递」，不代表「一定入图」—— 入图与否仍由 MemorySignalJudge 决定。
+    high-risk-lexicon:
+      - 过敏
+      - 忌口
+      - 不能吃
+      - 禁忌
+      - 禁止
+      - 别给我
+      - 千万别
+      - 医生
+      - 药
+      - 孕期
+    scan-window-limit: 50           # 单轮扫描最多处理的 user 轮次（防一次扫描压垮 LLM 判定）
+  confirm:                          # 异步对账：只管「已投递但未确认落库」
+    enabled: true
+    interval-ms: 300000             # 5 分钟一轮
+    batch-limit: 100
+    max-rounds: 8                   # 连续 8 轮未命中 → 写审计表 CONFIRM_TIMEOUT 隔离（防无限重投）
+    replay-after-rounds: 2          # 前 2 轮只计数不重投（落库本身 15~45s，别和它赛跑）
+    min-last-n: 50                  # ★ 严禁硬编码定值：动态 last_n 的保底
+    max-last-n: 500                 # 封顶；超过则打 WARN（窗口设错或异常流量）
+  replay:                           # 补投：只管「该投但没投出去」（熔断跳过 / 扫描漏投）
+    enabled: true
+    interval-ms: 600000             # 10 分钟一轮
+    batch-limit: 200
+  backpressure:                     # 背压熔断：★ 触发信号只认 MQ 物理积压
+    enabled: true
+    evaluate-interval-ms: 30000
+    queue-depth-threshold: 50       # write + 3 个 retry 队列 ready 之和
+    recovery-factor: 0.5            # 积压 < 阈值 × 0.5 且持续 recovery-hold-ms 才解冻
+    recovery-hold-ms: 180000
   recall:
     enabled: false                  # 召回链（在线路径）
     # ★ 宽拉取倍数（补丁 2）：/search 不过滤 invalid_at，
