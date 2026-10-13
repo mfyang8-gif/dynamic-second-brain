@@ -182,6 +182,20 @@ DB CAS 占位（废 Redis setnx，CAS 必须在 POST 前）／异步对账防死
 - 既有失败测试（与 B1 无关，全量 47 项里 3 项）：`AliOssUtilTest.testUploadInvalidBucket`、
   `PageServiceImplTest.testGenerateTitlePreview_ShortText_ShouldThrowException`、`SemanticPipelineDiagnosticTest.diagnose`（实机诊断类）。
 
+### 测试方案的落点（`docs/测试方案-B1写入链.md`，2026-10-13）
+
+分层 **L0 纯函数 / L1 组件 Mockito / L2 真环境集成 / L3 故障注入 / L4 附录 D 取证**，约 90+ 用例。
+**`pom.xml` 只有 `spring-boot-starter-test`**（无 Testcontainers / Awaitility / H2）→ 集成测试只能打真环境，
+必须自带夹具清理 + `Assumptions` 断网门闸 + `@Tag("integration")` 分层（否则 `mvn test` 在无网环境必红）。
+
+三条「不写就会重犯」的断言（本方案独有，别再丢）：
+1. ★ 高危词表**混入空字符串** → `contains("")` 恒 true → 所有消息都走快通道、优先级机制彻底失效。
+2. ★ **静态断言**：两条对账 SQL 必含 `NOT EXISTS(审计表)`；源码里**零** `LocalDateTime.MIN` 进 SQL 参数。
+3. ★ **反向断言**：旧链 `semantic.scan.queue` 的 args **必须为空**（其消费者有 catch-all，加 DLX 是死代码）。
+
+集成测试必须加 `-Djava.io.tmpdir=<可写目录>`，否则 surefire 建不出临时目录 → 测试 JVM 的 stdout 整段丢失。
+
+
 ## 九、Graphiti 服务端 / VM / Docker（实机实测，非推测）
 
 - 写 `POST /messages`；检索 `POST /search`（中文放 body）。**无 POST /episodes、无 user_id、无 source 字段**；
