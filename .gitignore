@@ -49,3 +49,10 @@ nbdist/
 # ===== 本地密钥（绝不提交）=====
 src/main/resources/application-local.yaml
 .env
+
+# ===== WorkBuddy 工作区 =====
+# memory/ 下的记忆文件入库（团队共享上下文），但临时产物一律忽略：
+# 否则每次 git add -A 都要手动 git reset 排除，靠记性迟早失误。
+.workbuddy/tmp/
+.workbuddy/_procscan*.txt
+.workbuddy/*.png
