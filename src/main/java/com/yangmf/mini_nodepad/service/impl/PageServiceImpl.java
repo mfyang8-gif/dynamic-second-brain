@@ -17,11 +17,15 @@ import com.yangmf.mini_nodepad.exception.ValidationException;
 import com.yangmf.mini_nodepad.mapper.PageMapper;
 import com.yangmf.mini_nodepad.pojo.dto.PageIngestDTO;
 import com.yangmf.mini_nodepad.pojo.dto.PageQueryDTO;
+import com.yangmf.mini_nodepad.pojo.dto.PageRenameDTO;
+import com.yangmf.mini_nodepad.pojo.dto.WebBatchImportRequest;
 import com.yangmf.mini_nodepad.pojo.entity.Page;
 import com.yangmf.mini_nodepad.pojo.vo.PageVO;
+import com.yangmf.mini_nodepad.pojo.vo.WebSearchResultVO;
 import com.yangmf.mini_nodepad.result.BatchOperationResult;
 import com.yangmf.mini_nodepad.result.PageResult;
 import com.yangmf.mini_nodepad.ai.rag.PageAsyncService;
+import com.yangmf.mini_nodepad.service.DocumentParsingService;
 import com.yangmf.mini_nodepad.service.PageService;
 import com.yangmf.mini_nodepad.ai.rag.QdrantTemplate;
 import com.yangmf.mini_nodepad.ai.component.TextProcessManager;
@@ -31,11 +35,13 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
@@ -59,7 +65,10 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
 
     @Value("${ai.retry-lock-seconds:10}")
     private int aiRetryLockSeconds;
+    private final DocumentParsingService documentParsingService;
 
+    /** 标题列上限保护，须与 DB `page.title` varchar(128) 对齐（正文完整入库不截断） */
+    private static final int MAX_TITLE_LENGTH = 128;
     private static final String COLLECTION_NAME = "dynamic_brain";
 
     private static final String OWNED_BOOK_SUB_QUERY =
@@ -75,7 +84,8 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
                            Bm25SparseEncoder bm25Encoder,
                            @Qualifier("aiTaskExecutor") Executor aiTaskExecutor,
                            StringRedisTemplate stringRedisTemplate,
-                           PageConverter pageConverter) {
+                           PageConverter pageConverter,
+                           DocumentParsingService documentParsingService) {
         this.pageMapper = pageMapper;
         this.pageAssistant = pageAssistant;
         this.pageAsyncService = pageAsyncService;
@@ -85,10 +95,11 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
         this.aiTaskExecutor = aiTaskExecutor;
         this.stringRedisTemplate = stringRedisTemplate;
         this.pageConverter = pageConverter;
+        this.documentParsingService = documentParsingService;
     }
 
     @Override
-    public void ingestPage(PageIngestDTO dto) {
+    public String ingestPage(PageIngestDTO dto) {
         String currentUserId = getCurrentUserId();
 
         String fastCleanText = textCleaner.physicalClean(dto.getContent());
@@ -111,12 +122,15 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
         page.setContent(fastCleanText);
         page.setContentHash(contentHash);
 
-        if (dto.getSourceType() != null) {
+        if (dto.getSourceType() != null && !dto.getSourceType().isBlank()) {
             try {
                 page.setSourceType(SourceTypeEnum.valueOf(dto.getSourceType()));
             } catch (IllegalArgumentException e) {
                 throw new ValidationException("不支持的来源类型: " + dto.getSourceType());
             }
+        } else {
+            // 缺省兜底：sourceType 为 NOT NULL 列，为空时默认手动录入，避免漏网击穿到数据库报 500
+            page.setSourceType(SourceTypeEnum.MANUAL);
         }
 
         boolean needAiProcess = Integer.valueOf(1).equals(dto.getAutoOptimize());
@@ -136,7 +150,61 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
         if (needAiProcess) {
             pageAsyncService.processAiIngest(page.getId(), fastCleanText, page.getBookId(), currentUserId);
         }
+
+        return page.getId();
     }
+
+
+
+    @Override
+    public String ingestFile(MultipartFile file, String bookId, Integer autoOptimize, Integer allowAiModify) {
+        if (bookId == null || bookId.isBlank()) {
+            throw new ValidationException("bookId 不能为空");
+        }
+
+        String rawText = documentParsingService.extractText(file);
+        if (rawText == null || rawText.isBlank()) {
+            throw new ValidationException("文件解析后内容为空，无法入库");
+        }
+
+        PageIngestDTO dto = new PageIngestDTO();
+        dto.setBookId(bookId);
+        dto.setTitle(capTitle(resolveFileTitle(file.getOriginalFilename())));
+        // 完整原文入库，不截断；切片由异步 processAiIngest 内的 splitter 负责
+        dto.setContent(rawText);
+        dto.setSourceType(SourceTypeEnum.FILE.name());
+        dto.setAutoOptimize(defaultFlag(autoOptimize));
+        dto.setAllowAiModify(defaultFlag(allowAiModify));
+
+        String pageId = ingestPage(dto);
+        log.info("文件解析入库成功 | pageId={}, bookId={}, fileName={}, contentLength={}",
+                pageId, bookId, file.getOriginalFilename(), rawText.length());
+        return pageId;
+    }
+
+    @Override
+    public List<String> ingestWebBatch(WebBatchImportRequest request) {
+        List<String> pageIds = new ArrayList<>();
+        for (WebSearchResultVO item : request.getItems()) {
+            try {
+                PageIngestDTO dto = new PageIngestDTO();
+                dto.setBookId(request.getBookId());
+                dto.setTitle(capTitle(buildWebTitle(item)));
+                // Snippet + URL 拼接为完整正文，不截断
+                dto.setContent(buildWebContent(item));
+                dto.setSourceType(SourceTypeEnum.WEB.name());
+                dto.setAutoOptimize(defaultFlag(request.getAutoOptimize()));
+                dto.setAllowAiModify(defaultFlag(request.getAllowAiModify()));
+                pageIds.add(ingestPage(dto));
+            } catch (Exception e) {
+                log.warn("网页条目导入失败（跳过） | title={}, msg={}", item.getTitle(), e.getMessage());
+            }
+        }
+        log.info("联网搜索批量导入完成 | bookId={}, requested={}, succeeded={}",
+                request.getBookId(), request.getItems().size(), pageIds.size());
+        return pageIds;
+    }
+
 
     @Override
     public PageVO getPageById(String id) {
@@ -159,7 +227,7 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
         PageInfo<Page> pageInfo = new PageInfo<>(pageList);
 
         List<PageVO> voList = pageInfo.getList().stream()
-                .map(pageConverter::toVO)
+                .map(pageConverter::toListVO)
                 .toList();
 
         return PageResult.<PageVO>builder()
@@ -259,7 +327,7 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
         PageInfo<Page> pageInfo = new PageInfo<>(pageList);
 
         List<PageVO> voList = pageInfo.getList().stream()
-                .map(pageConverter::toVO)
+                .map(pageConverter::toListVO)
                 .toList();
 
         return PageResult.<PageVO>builder()
@@ -269,7 +337,28 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
                 .records(voList)
                 .build();
     }
+    @Override
+    public PageVO renamePage(String id, PageRenameDTO dto) {
+        // 归属校验：查不到即视为无权访问，同时拿到当前实体用于回写返回
+        Page page = getByIdWithOwnershipCheck(id);
 
+        // 仅更新 title 与 updatedAt 两列，SQL 层保证 summary/content 等字段不被覆盖或清空；
+        // WHERE 追加 OWNED_BOOK_SUB_QUERY，与本模块写操作(softDelete/permanentDelete)的双重归属保障风格一致，杜绝 TOCTOU
+        String currentUserId = getCurrentUserId();
+        LambdaUpdateWrapper<Page> wrapper = new LambdaUpdateWrapper<>();
+        wrapper.eq(Page::getId, id)
+                .apply(OWNED_BOOK_SUB_QUERY, currentUserId)
+                .set(Page::getTitle, dto.getTitle())
+                .set(Page::getUpdatedAt, LocalDateTime.now());
+        if (!this.update(wrapper)) {
+            throw new ForbiddenException("无权操作该知识页");
+        }
+
+        // 将变更同步到内存实体后组装 VO 返回（content 由 toVO 正常带出）
+        page.setTitle(dto.getTitle());
+        page.setUpdatedAt(LocalDateTime.now());
+        return pageConverter.toVO(page);
+    }
     @Override
     public void emptyRecycleBin() {
         String currentUserId = getCurrentUserId();
@@ -399,7 +488,45 @@ public class PageServiceImpl extends ServiceImpl<PageMapper, Page> implements Pa
     }
 
     // ==================== 私有方法 ====================
+    private String resolveFileTitle(String filename) {
+        if (filename == null || filename.isBlank()) {
+            return "未命名文档";
+        }
+        int dot = filename.lastIndexOf('.');
+        return dot > 0 ? filename.substring(0, dot) : filename;
+    }
 
+    private String buildWebTitle(WebSearchResultVO item) {
+        if (item.getTitle() != null && !item.getTitle().isBlank()) {
+            return item.getTitle().trim();
+        }
+        if (item.getUrl() != null && !item.getUrl().isBlank()) {
+            return item.getUrl().trim();
+        }
+        return "网页来源";
+    }
+
+    private String buildWebContent(WebSearchResultVO item) {
+        StringBuilder sb = new StringBuilder();
+        if (item.getSnippet() != null) {
+            sb.append(item.getSnippet().trim());
+        }
+        if (item.getUrl() != null && !item.getUrl().isBlank()) {
+            sb.append("\n\n[来源] ").append(item.getUrl().trim());
+        }
+        return sb.toString();
+    }
+
+    private String capTitle(String title) {
+        if (title == null || title.isBlank()) {
+            return "未命名";
+        }
+        return title.length() > MAX_TITLE_LENGTH ? title.substring(0, MAX_TITLE_LENGTH) : title;
+    }
+
+    private Integer defaultFlag(Integer flag) {
+        return flag == null ? 1 : flag;
+    }
     private void cleanupQdrantAndBm25(String pageId) {
         List<String> chunkTexts = List.of();
 

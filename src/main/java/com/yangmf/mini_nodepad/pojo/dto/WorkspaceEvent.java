@@ -17,4 +17,12 @@ public record WorkspaceEvent(
     public static WorkspaceEvent artifactProgress(String artifactId, String progressJson) {
         return new WorkspaceEvent("ARTIFACT_PROGRESS", artifactId, progressJson);
     }
+
+    /**
+     * 命名事件：data 就是标题字符串本身。
+     * 生成中推"暂定名"，生成完成前再推一次"精修名"，前端原地替换加载态文案。
+     */
+    public static WorkspaceEvent artifactTitled(String artifactId, String dynamicTitle) {
+        return new WorkspaceEvent("ARTIFACT_TITLED", artifactId, dynamicTitle);
+    }
 }

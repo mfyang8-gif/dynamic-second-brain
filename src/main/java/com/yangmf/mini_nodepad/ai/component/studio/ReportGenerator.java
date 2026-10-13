@@ -47,11 +47,15 @@ public class ReportGenerator extends AbstractStudioGenerator<ReportRequest, Repo
 
     @Override
     public List<StudioProgressPayload> progressTimeline() {
+        // 7 帧：通读 → 立纲 → 起草 → 成文 → 核引 → 润色 → 校对（2~3 秒一格）
         return List.of(
-                new StudioProgressPayload("EXTRACT", "正在通读知识库全文...", 15),
-                new StudioProgressPayload("OUTLINE", "正在规划报告章节大纲...", 45),
-                new StudioProgressPayload("WRITE", "正在撰写章节正文...", 75),
-                new StudioProgressPayload("POLISH", "正在润色排版与总结...", 92)
+                new StudioProgressPayload("EXTRACT", "正在通读知识库全文...", 8),
+                new StudioProgressPayload("OUTLINE", "正在规划报告章节大纲...", 24),
+                new StudioProgressPayload("DRAFT", "正在起草章节要点...", 42),
+                new StudioProgressPayload("WRITE", "正在撰写章节正文...", 60),
+                new StudioProgressPayload("CITE", "正在核对引用与数据...", 76),
+                new StudioProgressPayload("POLISH", "正在润色排版与总结...", 88),
+                new StudioProgressPayload("FINALIZE", "正在做最后校对...", 93)
         );
     }
 

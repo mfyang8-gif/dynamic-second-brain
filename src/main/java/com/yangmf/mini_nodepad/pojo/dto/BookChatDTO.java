@@ -32,4 +32,9 @@ public class BookChatDTO {
     @Size(max = 5000, message = "自定义指令长度不能超过5000字符")
     @Schema(description = "自定义角色指令（role=custom 时使用）")
     private String customText;
+
+    @Size(max = 64, message = "regenerateToken 格式非法")
+    @Schema(description = "重新生成一次性凭证（来自 regenerate 接口响应的 instructionToken，恒非空），允许为空；"
+            + "regenerate 后紧跟的流式请求必须携带，后端 getAndDelete 消费后注入临时 System Prompt（含修正指令与上一版负例）；普通提问请勿携带")
+    private String regenerateToken;
 }

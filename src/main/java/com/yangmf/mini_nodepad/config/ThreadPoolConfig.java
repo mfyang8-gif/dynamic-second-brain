@@ -18,6 +18,8 @@ public class ThreadPoolConfig {
 
     public static final String STUDIO_TASK_EXECUTOR = "studioTaskExecutor";
 
+    public static final String TITLE_TASK_EXECUTOR = "titleTaskExecutor";
+
     @Bean(AI_TASK_EXECUTOR)
     public Executor aiTaskExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
@@ -40,6 +42,32 @@ public class ThreadPoolConfig {
         return executor;
     }
 
+
+    /**
+     * 工件"暂定名"专用池。
+     *
+     * <p>与生成池（STUDIO_TASK_EXECUTOR）分开的理由：生成池 core 只有 3，
+     * 暂定名若抢它的名额，3 个生成任务占满核心线程后命名任务会排到队列，
+     * 甚至触发 CallerRunsPolicy 回落到调用方线程，反而拖慢主生成。
+     *
+     * <p>与通用 AI 池（AI_TASK_EXECUTOR）分开的理由：通用池是 CallerRunsPolicy，
+     * 拒绝时【不抛异常】而是内联执行 —— 而暂定名是在 HTTP 请求线程里派发的，
+     * 一旦内联就会把 LLM 调用压在接口线程上。
+     * 这里刻意用 AbortPolicy：拒绝即抛 RejectedExecutionException，
+     * 调用方 catch 后静默降级（前端回退显示 topic），绝不阻塞任何线程。
+     */
+    @Bean(TITLE_TASK_EXECUTOR)
+    public Executor titleTaskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(4);
+        executor.setQueueCapacity(20);
+        executor.setThreadNamePrefix("Studio-Title-");
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
+        executor.initialize();
+        log.info("工件暂定名线程池 [{}] 初始化完成", TITLE_TASK_EXECUTOR);
+        return executor;
+    }
 
     @Bean(STUDIO_TASK_EXECUTOR)
     public Executor studioTaskExecutor() {

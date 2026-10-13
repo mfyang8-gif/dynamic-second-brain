@@ -36,11 +36,15 @@ public class PresentationGenerator extends AbstractStudioGenerator<PresentationR
     /** PPT 专属的沉浸式进度动画帧 */
     @Override
     public List<StudioProgressPayload> progressTimeline() {
+        // 7 帧：观点 → 故事线 → 每页要点 → 视觉排版 → 配图 → 装配 → 校对（2~3 秒一格）
         return List.of(
-                new StudioProgressPayload("EXTRACT", "正在提取知识库核心观点...", 15),
-                new StudioProgressPayload("PLAN", "正在规划幻灯片故事线...", 45),
-                new StudioProgressPayload("LAYOUT", "正在为您提炼每页视觉排版...", 75),
-                new StudioProgressPayload("IMAGE", "正在为您检索高清商业配图...", 92)
+                new StudioProgressPayload("EXTRACT", "正在提取知识库核心观点...", 8),
+                new StudioProgressPayload("PLAN", "正在规划幻灯片故事线...", 24),
+                new StudioProgressPayload("OUTLINE", "正在敲定每页要点...", 42),
+                new StudioProgressPayload("LAYOUT", "正在为您提炼每页视觉排版...", 60),
+                new StudioProgressPayload("IMAGE", "正在为您检索高清商业配图...", 76),
+                new StudioProgressPayload("ASSEMBLE", "正在装配整套演示...", 88),
+                new StudioProgressPayload("FINALIZE", "正在做最后校对...", 93)
         );
     }
 

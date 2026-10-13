@@ -20,10 +20,15 @@ public class MindmapGenerator extends AbstractStudioGenerator<MindmapRequest, Mi
 
     @Override
     public List<StudioProgressPayload> progressTimeline() {
+        // 6 帧：把「梳理 → 聚类 → 建骨架 → 展开 → 补细节 → 精简」的推理过程显式铺开，
+        // 保证 2~3 秒就有一格新进展（旧版 3 帧 = 8 秒一跳，观感是「卡住」）
         return List.of(
-                new StudioProgressPayload("EXTRACT", "正在梳理知识脉络...", 20),
-                new StudioProgressPayload("STRUCTURE", "正在构建层级导图...", 60),
-                new StudioProgressPayload("PRUNE", "正在精简分支与节点...", 88)
+                new StudioProgressPayload("EXTRACT", "正在梳理知识脉络...", 10),
+                new StudioProgressPayload("CLUSTER", "正在归并主题聚类...", 26),
+                new StudioProgressPayload("STRUCTURE", "正在构建层级骨架...", 44),
+                new StudioProgressPayload("EXPAND", "正在展开分支节点...", 62),
+                new StudioProgressPayload("DETAIL", "正在补充节点细节...", 78),
+                new StudioProgressPayload("PRUNE", "正在精简分支与节点...", 90)
         );
     }
 

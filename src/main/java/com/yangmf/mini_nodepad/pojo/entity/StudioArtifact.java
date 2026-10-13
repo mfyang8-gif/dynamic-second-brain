@@ -45,8 +45,11 @@ public class StudioArtifact implements Serializable {
     @Schema(description = "异步状态")
     private ArtifactStatus status;
 
-    @Schema(description = "工件标题")
+    @Schema(description = "工件标题（用户提交的 topic，作为展示兜底）")
     private String title;
+
+    @Schema(description = "AI 动态生成的场景化标题（两阶段命名终值，可为空）")
+    private String dynamicTitle;
 
     @TableField(typeHandler = JacksonTypeHandler.class)
     @Schema(description = "结构化JSON数据（多态）")

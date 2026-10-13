@@ -8,6 +8,8 @@ public enum ResultCodeEnum {
     NOT_FOUND(404, "请求的资源不存在"),
     INTERNAL_ERROR(500, "系统内部错误"),
 
+    WEB_SEARCH_UNAVAILABLE(5031, "联网搜索服务暂不可用"),
+
     // 你以后可以在这里随时增加业务报错，比如：
     // API_LIMIT_EXCEEDED(4001, "接口调用次数超限"),
     // AI_GENERATE_FAILED(5001, "AI生成摘要失败");

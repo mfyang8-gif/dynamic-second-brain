@@ -15,6 +15,15 @@ spring:
     encoding:
       charset: UTF-8
       force: true
+  rabbitmq:
+    host: ${RABBITMQ_HOST:192.168.88.130}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:root}
+    password: ${RABBITMQ_PASSWORD:root}
+    listener:
+      simple:
+        # 消费端 catch-all 兜底，毒消息不无限 requeue（本轮丢弃降级）
+        default-requeue-rejected: false
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: ${MYSQL_URL:jdbc:mysql://192.168.88.130:3306/dynamic_brain?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=utf-8&zeroDateTimeBehavior=convertToNull&useSSL=false&allowPublicKeyRetrieval=true}
@@ -48,6 +57,14 @@ spring:
               type: keyword
             - name: createdAt
               type: integer
+        # 第 2 个集合：用户习惯语义查重向量索引（MySQL 为 source of truth，Qdrant 仅作查重索引）
+        - name: user_semantic_habits
+          dimension: 1024
+          indexes:
+            - name: user_id
+              type: integer
+            - name: fact_hash
+              type: keyword
     web:
       resources:
         add-mappings: true
@@ -137,6 +154,22 @@ rag:
     base-url: https://llm-c36pjigszb7ajl5e.cn-beijing.maas.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
     api-key: ${RERANK_API_KEY}
     model-name: qwen3.7-text-rerank
+  # 双路并发 + 两段流式（2026-10-12 用户终版裁决：结构根治，废弃串行漏斗与判卷器）
+  dual-path:
+    # 总开关：false 时完全回到「只答知识库 + 未命中就声明」的老行为（回滚用）
+    enabled: true
+    # 本地通路就绪等待上限：超时视为本地不可用，不开 Pass1（不拖慢首字）
+    local-ready-timeout-ms: 4000
+    # 联网通路总预算：超过即放弃等联网，直接收尾
+    web-budget-ms: 30000
+    # Pass1 是否开启的余弦底线（真实余弦 0~1）。
+    # ⚠️ 只能作用在纯稠密通道的分数上 —— 主链路的 RRF 分数（0.01~0.03）与余弦不可比，
+    #    拿它跟 0.28 比会 100% 误判成"本地没料"。
+    pass1-cosine-gate: 0.28
+    # Pass1 软预算（字数）：第一段写到这里就该收束，把空间留给 Pass2
+    pass1-soft-budget-chars: 400
+    # 单次 Pass 的兜底超时（防 LLM 流悬挂把虚拟线程永久占住）
+    pass-timeout-ms: 180000
 # 输入清洗长度限制
 guard:
   max-question-length: 2000
@@ -161,8 +194,24 @@ chat:
   suggestion:
     max-answer-length: 500
 
+# 全局语义记忆（Phase 3 终极版）：向量语义查重配置
+semantic:
+  dedup:
+    # 方案 B：本值已从「判定阈值」降级为「召回阈值」——只要进这个分数线就交给 LLM 裁决，
+    # 因此必须大幅放宽（0.60）确保同义句不漏；真正的同一性判断在 semantic.judge 那一步。
+    similarity-threshold: 0.60
+    # 宽松召回条数：只把最相近的 3 条喂给 LLM 仲裁，控制其上下文窗口与判定噪音
+    recall-limit: 3
+    collection-name: user_semantic_habits
+  # LLM 仲裁器（HabitJudge）：二值逻辑判定，独立模型参数便于单独调优
+  judge:
+    model-name: qwen-turbo
+    temperature: 0.0
+
 # Qdrant 向量检索阈值配置
 qdrant:
+  # 主检索集合名（联网降级第一层走原生稠密通道时同样要指名集合）
+  collection-name: dynamic_brain
   dense:
     score-threshold: 0.30
   sparse:
@@ -181,3 +230,41 @@ mcp:
 studio:
   pandoc:
     api-url: ${PANDOC_API_URL:http://192.168.88.130:8000/api/convert}
+
+web-search:
+  default-limit: 6
+  max-limit: 10
+  recall-multiplier: 3
+  # 预检索注入（双路并发的联网侧）
+  pre-search-limit: 5          # 单条搜索词取回几条网页
+  pre-search-max-queries: 2    # 最多并发几条搜索词
+  pre-search-context-top-n: 5  # 最终注入上下文保留几条来源
+  pre-search-timeout-ms: 8000  # 单路搜索等待上限
+  # 注入防护三道工序（用户 2026-10-12 裁决：外网内容零信任）
+  guard:
+    enabled: true              # 隔离 + 消毒总开关
+    blacklist-enabled: true    # 检出即丢弃开关（关掉只做隔离消毒，不丢来源）
+  # 语义去重：跨站转载只留一条（URL 级去重拦不住转载）
+  dedup:
+    enabled: true
+    coarse-threshold: 0.85     # 字符级 Jaccard 粗筛，命中才调 embedding
+    semantic-threshold: 0.92   # 向量余弦精判，超过判为转载重复
+
+# Actuator / Micrometer（用户 2026-10-12 裁决：只暴露 metrics,health，走免登白名单）
+management:
+  endpoints:
+    web:
+      exposure:
+        include: metrics,health
+  endpoint:
+    health:
+      show-details: never
+
+# 日志编码显式钉死 UTF-8。
+# 背景（2026-10-12 实测）：本机控制台代码页是 GBK，而应用按 UTF-8 写 stdout；
+# 上游若按 mbcs 解码，日志里所有中文都会变成"鑱旂綉棰勬绱"这类不可逆乱码——
+# 双路/降级链路的排障严重依赖中文日志（notice 原因、Pass 打点），必须修掉。
+logging:
+  charset:
+    console: UTF-8
+    file: UTF-8

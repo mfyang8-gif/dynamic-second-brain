@@ -8,7 +8,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.validation.BindException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
@@ -24,6 +26,27 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Void> handleNoResourceFoundException(NoResourceFoundException e) {
         log.debug("静态资源未找到 | {}", e.getMessage());
         return ResponseEntity.notFound().build();
+    }
+
+
+
+    @ExceptionHandler(BindException.class)
+    public ResponseEntity<Result<Void>> handleBindException(BindException e, HttpServletRequest request) {
+        StringBuilder msg = new StringBuilder("参数校验失败: ");
+        e.getBindingResult().getFieldErrors().forEach(error ->
+                msg.append(error.getField()).append(" ").append(error.getDefaultMessage()).append("; ")
+        );
+        log.warn("查询/表单参数绑定校验失败 | {}", msg);
+        return ResponseEntity.badRequest()
+                .body(Result.error(400, msg.toString(), getRequestId(request)));
+    }
+
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<Result<Void>> handleMissingServletRequestParameterException(MissingServletRequestParameterException e, HttpServletRequest request) {
+        String msg = "缺少必填参数: " + e.getParameterName();
+        log.warn("必填请求参数缺失 | {}", msg);
+        return ResponseEntity.badRequest()
+                .body(Result.error(400, msg, getRequestId(request)));
     }
 
     @ExceptionHandler(ConstraintViolationException.class)

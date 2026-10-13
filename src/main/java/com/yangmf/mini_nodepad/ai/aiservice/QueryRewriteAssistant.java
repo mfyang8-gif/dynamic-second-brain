@@ -2,6 +2,7 @@ package com.yangmf.mini_nodepad.ai.aiservice;
 
 import dev.langchain4j.service.SystemMessage;
 import dev.langchain4j.service.UserMessage;
+import dev.langchain4j.service.V;
 
 public interface QueryRewriteAssistant {
 
@@ -21,5 +22,5 @@ public interface QueryRewriteAssistant {
     
     用户原始问题：{{query}}
     """)
-    String rewrite(String query, String context);
+    String rewrite(@V("query") String query, @V("context") String context);
 }

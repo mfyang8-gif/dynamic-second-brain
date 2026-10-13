@@ -5,7 +5,9 @@ import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.yangmf.mini_nodepad.ai.rag.SourceReference;
 import com.yangmf.mini_nodepad.json.JsonArrayTypeHandler;
+import com.yangmf.mini_nodepad.json.SourceReferenceListTypeHandler;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -43,6 +45,18 @@ public class ChatMessage implements Serializable {
     @TableField(typeHandler = JsonArrayTypeHandler.class)
     @Schema(description = "引用来源PageId列表")
     private List<String> sourcePageIds;
+
+    /**
+     * 【2026-10-12 落库补齐】此前引用与推荐只存在于 SSE 事件流里，历史接口查不出来，
+     * 刷新页面 / 换标签页（sessionStorage 缓存失效）后「引用来源」「猜你想问」两块消失。
+     */
+    @TableField(typeHandler = SourceReferenceListTypeHandler.class)
+    @Schema(description = "RAG命中引用片段（assistant 消息才有）")
+    private List<SourceReference> sourceReferences;
+
+    @TableField(typeHandler = JsonArrayTypeHandler.class)
+    @Schema(description = "推荐追问（assistant 消息才有，suggestions 生成后异步回写）")
+    private List<String> suggestions;
 
     @Schema(description = "创建时间")
     private LocalDateTime createdAt;

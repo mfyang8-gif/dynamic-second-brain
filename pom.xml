@@ -118,6 +118,14 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
+
+        <!-- Spring Boot Actuator + Micrometer（用户 2026-10-12 拍板：双路降级可观测性，
+             属规划中的第 9 阶段「可观测性与计费」提前落地）。
+             只暴露 metrics / health，并在 WebMvcConfiguration 登记免登白名单。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
         <!-- Spring Boot Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -197,6 +205,20 @@
             <version>${langchain4j.version}</version>
         </dependency>
 
+
+        <!--  LangChain4j PDF 解析器 (PDFBox) -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-document-parser-apache-pdfbox</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+
+        <!--  LangChain4j Office 解析器 (POI) -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-document-parser-apache-poi</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
         <!-- EasyExcel -->
         <dependency>
             <groupId>com.alibaba</groupId>
@@ -229,6 +251,14 @@
         <dependency>
             <groupId>com.baomidou</groupId>
             <artifactId>mybatis-plus-boot-starter</artifactId>
+            <version>${mybatis-plus.version}</version>
+        </dependency>
+
+        <!-- MP 3.5.9+ 把分页能力拆到了这里：PaginationInnerInterceptor 依赖它。
+             不引入则 Page 对象静默失效（selectPage 不拼 LIMIT，全表入内存）。 -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-jsqlparser</artifactId>
             <version>${mybatis-plus.version}</version>
         </dependency>
 

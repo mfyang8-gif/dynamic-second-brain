@@ -4,6 +4,8 @@ import com.yangmf.mini_nodepad.exception.ValidationException;
 import com.yangmf.mini_nodepad.pojo.dto.PageIngestDTO;
 import com.yangmf.mini_nodepad.pojo.dto.PageQueryDTO;
 
+import com.yangmf.mini_nodepad.pojo.dto.PageRenameDTO;
+import com.yangmf.mini_nodepad.pojo.dto.WebBatchImportRequest;
 import com.yangmf.mini_nodepad.pojo.vo.PageVO;
 import com.yangmf.mini_nodepad.result.BatchOperationResult;
 import com.yangmf.mini_nodepad.result.PageResult;
@@ -15,13 +17,16 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import lombok.RequiredArgsConstructor;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1/pages")
 @RequiredArgsConstructor
+@Validated
 @Tag(name = "知识页管理", description = "知识页的录入、查询、删除、回收站接口")
 public class PageController {
 
@@ -37,9 +42,34 @@ public class PageController {
         //TODO：入库qdrant时候选择的结构以及字段
     @PostMapping("/ingest")
     @Operation(summary = "录入知识页")
-    public Result<Void> ingest(@Valid @RequestBody PageIngestDTO dto) {
-        pageService.ingestPage(dto);
-        return Result.success();
+    public Result<String> ingest(@Valid @RequestBody PageIngestDTO dto) {
+        String pageId = pageService.ingestPage(dto);
+        return Result.success(pageId);
+    }
+
+    @PostMapping("/ingest-file")
+    @Operation(summary = "文件解析入库",
+            description = "multipart/form-data 上传 PDF/Word/TXT/MD；后端严格校验后缀/MIME/大小，提取完整纯文本入库")
+    public Result<String> ingestFile(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam("bookId") @NotBlank(message = "书本ID不能为空") String bookId,
+            @RequestParam(value = "autoOptimize", required = false, defaultValue = "1") Integer autoOptimize,
+            @RequestParam(value = "allowAiModify", required = false, defaultValue = "1") Integer allowAiModify) {
+        return Result.success(pageService.ingestFile(file, bookId, autoOptimize, allowAiModify));
+    }
+
+    @PostMapping("/ingest-web-batch")
+    @Operation(summary = "联网搜索结果批量导入",
+            description = "用户勾选候选卡片后提交，落库并触发异步向量化（sourceType=WEB），返回成功新建的 pageId 列表")
+    public Result<List<String>> ingestWebBatch(@Valid @RequestBody WebBatchImportRequest request) {
+        return Result.success(pageService.ingestWebBatch(request));
+    }
+
+    @PutMapping("/{id}")
+    @Operation(summary = "重命名知识页", description = "仅更新标题，不会覆盖正文/摘要等其他字段")
+    public Result<PageVO> rename(@NotBlank(message = "知识页ID不能为空") @PathVariable String id,
+                                 @RequestBody @Valid PageRenameDTO dto) {
+        return Result.success(pageService.renamePage(id, dto));
     }
 
     @GetMapping("/{id}")

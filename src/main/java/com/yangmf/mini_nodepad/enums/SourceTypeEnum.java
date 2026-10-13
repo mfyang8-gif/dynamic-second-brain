@@ -13,6 +13,11 @@ public enum SourceTypeEnum {
     /**
      * 混合
      */
+
+    /**
+     * 文件解析入库（PDF/Word/TXT/MD）
+     */
+    FILE("FILE", "文件解析"),
     HYBRID("HYBRID", "混合");
     private String code;
     private String description;

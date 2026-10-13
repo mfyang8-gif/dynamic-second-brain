@@ -27,6 +27,12 @@ public interface PageConverter {
     @Mapping(source = "aiProcessStatus", target = "aiProcessStatus", qualifiedByName = "aiStatusToCode")
     PageVO toVO(Page page);
 
+    /** 列表/回收站专用：剥离正文 content，避免分页响应被大文本撑爆 */
+    @Mapping(source = "sourceType", target = "sourceType", qualifiedByName = "sourceTypeToString")
+    @Mapping(source = "aiProcessStatus", target = "aiProcessStatus", qualifiedByName = "aiStatusToCode")
+    @Mapping(target = "content", ignore = true)
+    PageVO toListVO(Page page);
+
     @Named("sourceTypeToString")
     default String sourceTypeToString(SourceTypeEnum sourceType) {
         return sourceType != null ? sourceType.name() : null;

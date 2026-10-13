@@ -2,12 +2,16 @@
 package com.yangmf.mini_nodepad.controller;
 
 import com.yangmf.mini_nodepad.enums.studio.ArtifactType;
+import com.yangmf.mini_nodepad.pojo.dto.studio.query.StudioHistoryQueryDTO;
 import com.yangmf.mini_nodepad.pojo.dto.studio.request.FlashcardRequest;
 import com.yangmf.mini_nodepad.pojo.dto.studio.request.MindmapRequest;
 import com.yangmf.mini_nodepad.pojo.dto.studio.request.PresentationRequest;
 import com.yangmf.mini_nodepad.pojo.dto.studio.request.QuizRequest;
 import com.yangmf.mini_nodepad.pojo.dto.studio.request.ReportRequest;
 import com.yangmf.mini_nodepad.pojo.entity.StudioArtifact;
+import com.yangmf.mini_nodepad.pojo.vo.StudioArtifactDetailVO;
+import com.yangmf.mini_nodepad.pojo.vo.StudioArtifactListVO;
+import com.yangmf.mini_nodepad.result.PageResult;
 import com.yangmf.mini_nodepad.result.Result;
 import com.yangmf.mini_nodepad.service.StudioService;
 import com.yangmf.mini_nodepad.service.impl.StudioServiceImpl;
@@ -71,10 +75,17 @@ public class StudioController {
         return Result.success(artifacts);
     }
 
+    @GetMapping("/artifacts/history")
+    @Operation(summary = "分页查询生成历史", description = "当前登录用户的工件历史列表：强制分页（单页≤100）、剥离 payload 大字段、返回列表 VO。userId 由服务端鉴权上下文取得，不接受前端传入")
+    public Result<PageResult<StudioArtifactListVO>> historyArtifacts(
+            @Valid StudioHistoryQueryDTO queryDTO) {
+        return Result.success(studioServiceImpl.pageHistory(queryDTO));
+    }
+
     @GetMapping("/artifacts/{id}")
-    @Operation(summary = "查询工件详情", description = "根据 artifactId 获取单个工件（含完整 payload）")
-    public Result<StudioArtifact> getArtifact(
+    @Operation(summary = "查询工件详情", description = "根据 artifactId 获取单个工件（详情 VO，含完整 payload 大字段，唯一放行 payload 的查询接口）")
+    public Result<StudioArtifactDetailVO> getArtifact(
             @NotBlank(message = "工件ID不能为空") @PathVariable String id) {
-        return Result.success(studioServiceImpl.getById(id));
+        return Result.success(studioServiceImpl.getDetail(id));
     }
 }

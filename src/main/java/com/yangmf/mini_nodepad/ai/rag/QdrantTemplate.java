@@ -208,6 +208,79 @@ public class QdrantTemplate {
         }
     }
 
+    /**
+     * 习惯语义查重专用：纯稠密向量余弦相似度检索（不经 RRF 融合）。
+     * search() 返回的 score 是 RRF 排名制分数（典型 0.01~0.03），与余弦相似度不可比，
+     * 相似度阈值判定（如 >0.85）必须走本通道：score 即真实余弦相似度（0~1）。
+     * 阈值判断交由调用方配置化完成，本方法不设内建 scoreThreshold。
+     */
+    public List<VectorSearchResult> searchByDenseSimilarity(String collectionName, String queryText,
+                                                            Map<String, Object> exactFilters, int limit) {
+        if (queryText == null || queryText.trim().isEmpty()) {
+            return Collections.emptyList();
+        }
+        try {
+            Response<Embedding> embedResponse = embeddingModel.embed(queryText);
+            if (embedResponse == null || embedResponse.content() == null) {
+                throw new BusinessException("Embedding 模型未返回有效结果");
+            }
+            float[] queryDenseArray = embedResponse.content().vector();
+
+            QueryPoints.Builder builder = QueryPoints.newBuilder()
+                    .setCollectionName(collectionName)
+                    .setQuery(nearest(io.qdrant.client.VectorInputFactory.vectorInput(queryDenseArray)))
+                    .setUsing(DENSE_VECTOR_NAME)
+                    .setLimit(limit)
+                    .setWithPayload(WithPayloadSelector.newBuilder().setEnable(true).build());
+            if (exactFilters != null && !exactFilters.isEmpty()) {
+                builder.setFilter(buildExactMatchFilter(exactFilters));
+            }
+
+            List<ScoredPoint> points = qdrantClient.queryAsync(builder.build()).get();
+            List<VectorSearchResult> results = new ArrayList<>();
+            for (ScoredPoint point : points) {
+                Map<String, Object> returnPayload = new HashMap<>();
+                point.getPayloadMap().forEach((k, v) -> returnPayload.put(k, extractValue(v)));
+                results.add(VectorSearchResult.builder()
+                        .pointId(point.getId().getUuid())
+                        .score(point.getScore())
+                        .payload(returnPayload)
+                        .rawText((String) returnPayload.get("rawText"))
+                        .build());
+            }
+            return results;
+        } catch (ExecutionException e) {
+            log.error("Qdrant 稠密相似度检索失败 | collection={}", collectionName, e);
+            throw new BusinessException("向量相似度检索暂时不可用，请稍后重试", e.getCause());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("Qdrant 稠密相似度检索被中断 | collection={}", collectionName, e);
+            throw new BusinessException("向量相似度检索被中断，请稍后重试", e);
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("Qdrant 稠密相似度检索未知异常 | collection={}", collectionName, e);
+            throw new BusinessException("向量相似度检索失败，请稍后重试", e);
+        }
+    }
+
+    private Filter buildExactMatchFilter(Map<String, Object> exactFilters) {
+        Filter.Builder filterBuilder = Filter.newBuilder();
+        exactFilters.forEach((key, val) -> {
+            if (val instanceof String) {
+                filterBuilder.addMust(matchKeyword(key, (String) val));
+            } else if (val instanceof Integer || val instanceof Long) {
+                filterBuilder.addMust(match(key, ((Number) val).longValue()));
+            } else if (val instanceof List<?> rawList && !rawList.isEmpty()) {
+                List<String> stringValues = rawList.stream()
+                        .map(String::valueOf)
+                        .toList();
+                filterBuilder.addMust(matchKeywords(key, stringValues));
+            }
+        });
+        return filterBuilder.build();
+    }
+
     public void delete(String collectionName, String pointId) {
         try {
             Common.PointId id = Common.PointId.newBuilder().setUuid(toQdrantUuid(pointId)).build();
@@ -283,6 +356,56 @@ public class QdrantTemplate {
         } catch (Exception e) {
             log.error("Qdrant 查询 chunk 文本未知异常 | pageId={}", pageId, e);
             throw new BusinessException("向量库查询失败，请稍后重试", e);
+        }
+    }
+
+    /**
+     * 引用原文专用：按确定性 chunkId（{pageId}_chunk_{index}）直接 retrieve 多个点，
+     * 走向量无关的 GetPoints API，毫秒级，禁止走 search/RRF 检索链路。
+     *
+     * @return chunkIndex → rawText 映射，缺失的分块 index 不出现在结果中
+     */
+    public Map<Integer, String> fetchChunkTextsByIndexes(String collectionName, String pageId, List<Integer> indexes) {
+        try {
+            List<Common.PointId> ids = indexes.stream()
+                    .filter(idx -> idx != null && idx >= 0)
+                    .map(idx -> Common.PointId.newBuilder()
+                            .setUuid(toQdrantUuid(pageId + "_chunk_" + idx))
+                            .build())
+                    .toList();
+            if (ids.isEmpty()) {
+                return Collections.emptyMap();
+            }
+
+            List<Points.RetrievedPoint> points = qdrantClient.retrieveAsync(
+                    collectionName, ids,
+                    WithPayloadSelector.newBuilder().setEnable(true).build(),
+                    Points.WithVectorsSelector.newBuilder().setEnable(false).build(),
+                    null).get();
+
+            Map<Integer, String> result = new HashMap<>();
+            for (Points.RetrievedPoint point : points) {
+                Object chunkIndex = extractValue(point.getPayloadMap().get("chunkIndex"));
+                Object rawText = extractValue(point.getPayloadMap().get("rawText"));
+                if (chunkIndex instanceof Number n && rawText instanceof String text) {
+                    result.put(n.intValue(), text);
+                }
+            }
+            log.debug("Qdrant 按 chunkId 直取分块 | collection={}, pageId={}, requested={}, hit={}",
+                    collectionName, pageId, indexes, result.size());
+            return result;
+        } catch (ExecutionException e) {
+            log.error("Qdrant 按 chunkId 检索失败 | collection={}, pageId={}, indexes={}", collectionName, pageId, indexes, e);
+            throw new BusinessException("引用原文查询失败，请稍后重试", e.getCause());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("Qdrant 按 chunkId 检索被中断 | collection={}, pageId={}", collectionName, pageId, e);
+            throw new BusinessException("引用原文查询被中断，请稍后重试", e);
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("Qdrant 按 chunkId 检索未知异常 | collection={}, pageId={}", collectionName, pageId, e);
+            throw new BusinessException("引用原文服务暂时不可用，请稍后重试", e);
         }
     }
 

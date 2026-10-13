@@ -27,6 +27,9 @@ public class PageVO {
     @Schema(description = "AI生成摘要")
     private String summary;
 
+    @Schema(description = "正文原始内容（仅详情接口返回，列表接口不返回）")
+    private String content;
+
     @Schema(description = "来源类型")
     private String sourceType;
 

@@ -3,6 +3,7 @@ package com.yangmf.mini_nodepad.ai.aiservice;
 
 import dev.langchain4j.service.SystemMessage;
 import dev.langchain4j.service.UserMessage;
+import dev.langchain4j.service.V;
 
 public interface SuggestionAssistant {
 
@@ -22,5 +23,5 @@ public interface SuggestionAssistant {
     AI 的回答（摘要前500字）：
     {{answer}}
     """)
-    String generateSuggestions(String question, String answer);
+    String generateSuggestions(@V("question") String question, @V("answer") String answer);
 }

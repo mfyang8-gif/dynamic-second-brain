@@ -2,6 +2,7 @@ package com.yangmf.mini_nodepad.ai.aiservice;
 
 import dev.langchain4j.service.SystemMessage;
 import dev.langchain4j.service.UserMessage;
+import dev.langchain4j.service.V;
 
 public interface ContextSummarizer {
 
@@ -20,5 +21,5 @@ public interface ContextSummarizer {
     4. 使用 Markdown 列表格式，高度凝练，控制在 300 字以内
     5. 直接输出摘要内容，不加任何前缀
     """)
-    String summarizeIncremental(String oldSummary, String newMessages);
+    String summarizeIncremental(@V("oldSummary") String oldSummary, @V("newMessages") String newMessages);
 }

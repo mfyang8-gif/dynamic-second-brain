@@ -80,14 +80,30 @@ public class WebMvcConfiguration implements WebMvcConfigurer {
 
         registry.addInterceptor(jwtTokenAdminInterceptor)
                 .addPathPatterns("/api/v1/admin/**")
-                .excludePathPatterns("/api/v1/admin/user/login");
+                .excludePathPatterns("/api/v1/admin/user/login",
+                        "/actuator/**");
+
 
         registry.addInterceptor(jwtTokenUserInterceptor)
                 .addPathPatterns("/api/v1/user/**", "/api/v1/books/**", "/api/v1/pages/**",
                         "/api/v1/sessions/**", "/api/v1/chat/**", "/api/v1/workspace/**",
-                        "/api/v1/studio/**", "/api/v1/files/**")
+                        "/api/v1/studio/**", "/api/v1/files/**", "/api/v1/search/**",
+                        // 2026-10-11 补：SemanticMemoryController 的 /api/v1/memory/**
+                        // 依赖 BaseContext.getCurrentId() 拿 userId，本处漏配会让它
+                        // 每次请求都抛 UnauthorizedException("未登录或登录已过期")，
+                        // 即"带着有效 token 也 100% 401"。凡新开 @RestController
+                        // 且从 BaseContext 取身份的，必须同步登记到本白名单。
+                        "/api/v1/memory/**",
+                        // 2026-10-12 补：ChunkReferenceController 的 /api/v1/knowledge/**
+                        //（引用卡片展开拉分块原文）漏配会导致点击引用 chip 即 401 被踢下线
+                        "/api/v1/knowledge/**")
                 .excludePathPatterns(
                         "/api/v1/user/user/login",
+                        // 2026-10-12 补：Actuator 端点（用户拍板只暴露 metrics,health）。
+                        // 当前 addPathPatterns 只覆盖 /api/v1/**，actuator 本就拦不到；
+                        // 这里显式登记是防御性的 —— 一旦今后有人扩大匹配前缀，
+                        // 监控端点不会突然变成"要登录才能看"，也不会被 JWT 逻辑连累。
+                        "/actuator/**",
                         "/doc.html",
                         "/doc.html/**",
                         "/swagger-ui/**",

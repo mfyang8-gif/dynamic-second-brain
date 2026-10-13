@@ -14,8 +14,8 @@ public class PageIngestDTO {
     private String bookId;
 
     @NotBlank(message = "标题不能为空")
-    @Size(max = 200, message = "标题不能超过200个字符")
-    @Schema(description = "知识页标题", requiredMode = Schema.RequiredMode.REQUIRED, maxLength = 200)
+    @Size(max = 128, message = "标题不能超过128个字符")
+    @Schema(description = "知识页标题", requiredMode = Schema.RequiredMode.REQUIRED, maxLength = 128)
     private String title;
 
     @NotBlank(message = "内容不能为空")

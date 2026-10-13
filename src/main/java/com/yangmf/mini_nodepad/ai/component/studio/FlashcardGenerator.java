@@ -31,10 +31,14 @@ public class FlashcardGenerator extends AbstractStudioGenerator<FlashcardRequest
 
     @Override
     public List<StudioProgressPayload> progressTimeline() {
+        // 6 帧：概念 → 切分 → 提面 → 补例 → 分组 → 排序（2~3 秒一格）
         return List.of(
-                new StudioProgressPayload("EXTRACT", "正在提取核心概念与术语...", 20),
-                new StudioProgressPayload("DISTILL", "正在提炼卡片正反面...", 55),
-                new StudioProgressPayload("GROUP", "正在按类别分组卡片...", 85)
+                new StudioProgressPayload("EXTRACT", "正在提取核心概念与术语...", 10),
+                new StudioProgressPayload("SPLIT", "正在切分知识单元...", 26),
+                new StudioProgressPayload("DISTILL", "正在提炼卡片正反面...", 44),
+                new StudioProgressPayload("ENRICH", "正在补充例证与提示...", 62),
+                new StudioProgressPayload("GROUP", "正在按类别分组卡片...", 80),
+                new StudioProgressPayload("ORDER", "正在排定复习顺序...", 90)
         );
     }
 

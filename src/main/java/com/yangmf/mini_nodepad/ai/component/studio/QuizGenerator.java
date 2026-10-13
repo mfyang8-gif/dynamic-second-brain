@@ -29,11 +29,15 @@ public class QuizGenerator extends AbstractStudioGenerator<QuizRequest, QuizPayl
 
     @Override
     public List<StudioProgressPayload> progressTimeline() {
+        // 7 帧：取考点 → 排布 → 写题干 → 补解析 → 校对 → 均衡 → 定稿（2~3 秒一格）
         return List.of(
-                new StudioProgressPayload("EXTRACT", "正在检索知识库核心考点...", 15),
-                new StudioProgressPayload("COMPOSE", "正在编写题干与选项...", 50),
-                new StudioProgressPayload("EXPLAIN", "正在生成答案与详细解析...", 80),
-                new StudioProgressPayload("BALANCE", "正在校验题型与难度分布...", 92)
+                new StudioProgressPayload("EXTRACT", "正在检索知识库核心考点...", 8),
+                new StudioProgressPayload("OUTLINE", "正在梳理考点分布...", 22),
+                new StudioProgressPayload("COMPOSE", "正在编写题干与选项...", 40),
+                new StudioProgressPayload("ENRICH", "正在补齐干扰项与解析...", 58),
+                new StudioProgressPayload("EXPLAIN", "正在生成答案与详细解析...", 74),
+                new StudioProgressPayload("BALANCE", "正在校验题型与难度分布...", 88),
+                new StudioProgressPayload("FINALIZE", "正在做最后编排...", 93)
         );
     }
 
