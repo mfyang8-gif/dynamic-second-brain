@@ -268,3 +268,26 @@ logging:
   charset:
     console: UTF-8
     file: UTF-8
+
+# ===== Phase 4 · Graphiti 记忆微服务（B0 契约层，2026-10-13）=====
+# ⚠️ B0 阶段只交付契约层（配置 + DTO + Client），工程内没有任何调用点：
+#    三个开关默认全关，确保 B1 半成品上线时不会被误触发（灰度三开关见设计文档 §5.1）。
+graphiti:
+  enabled: false                    # 总开关，B1 起逐层打开
+  base-url: ${GRAPHITI_BASE_URL:http://192.168.88.130:8088}
+  write:
+    enabled: false                  # 写入链（MQ 消费侧）
+    judge-enabled: false            # 实质判定走 LLM；关则全走规则快通道
+  recall:
+    enabled: false                  # 召回链（在线路径）
+    # ★ 宽拉取倍数（补丁 2）：/search 不过滤 invalid_at，
+    #   不放大就会出现「匹配度最高的 N 条全已作废 → 召回为空」。约束 >= 1，基线 4。
+    fetch-factor: 4
+    unsettled-window-minutes: 15    # L1「未沉淀原文」时间窗兜底（§4.1 风险二）
+  timeout:                          # §2.5：读操作必须远短于写操作
+    recall-connect-ms: 1000
+    recall-read-ms: 2000            # 召回阻塞 SSE 首字，超时即降级为「无记忆」
+    write-connect-ms: 2000
+    write-read-ms: 5000            # 只要 202 到手即可
+    confirm-connect-ms: 1000
+    confirm-read-ms: 3000           # 对账定时任务，不阻塞任何用户路径
