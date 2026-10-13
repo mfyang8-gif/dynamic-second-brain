@@ -27,6 +27,15 @@
   **可在 `mvn test` 里前台跑完的集成测试**（后者额外好处：成为回归守卫）。
 - **`taskkill /F /PID` 在 MSYS 下报 `无效参数 'F:/'`** → 加前缀 `MSYS_NO_PATHCONV=1`。
   杀进程前先 `tasklist` 对内存：Spring Boot ~500MB、IDE 的 java 偏小（**别误杀 IDEA**）。
+- ⚠️ **`git push` 可能长时间挂住（>2 分钟无输出）** —— 2026-10-13 实测两次。
+  两个因素叠加，都用上就稳：
+  1. **凭据助手**：`credential.helper=helper-selector`（→ Windows 的 `manager`），
+     可能弹 GUI 或等待输入 → 加 **`GIT_TERMINAL_PROMPT=0`** 强制走 Credential Manager 缓存。
+  2. **全局 git 配了代理且 https 指向已知坏端口**：`http.proxy=127.0.0.1:10808`、
+     `https.proxy=127.0.0.1:33210`（**33210 就是 npm 那个坏端口**）
+     → 加 `-c http.proxy= -c https.proxy=` 绕过。
+  可用形式：`GIT_TERMINAL_PROMPT=0 git -C <repo> -c http.proxy= -c https.proxy= push origin <branch>`。
+  诊断顺序：先 `git ls-remote`（若 1 秒内成功 → 网络没问题，问题在凭据）。
 
 ### 8082 / dev server
 - 后端 dev 端口 **8082**（`src/main/resources/application-dev.yaml`，默认 profile=dev；前端 vite proxy 指它）。
