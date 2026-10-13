@@ -1573,6 +1573,80 @@ user 原文 ──① 高危词表(规则)──▶ 命中则提前投递
 | **12** | ★（**暗雷 1 的正面回归**）`NOT EXISTS(审计表)` 是否真的挡住判否消息 | 造一条必被判否的闲聊 → 观察后续 10~20 分钟内它**是否被 Replay / Confirm 投出去** | 必须**始终不被投递**。若被投 → SQL 漏了 `NOT EXISTS`，图谱会被灌垃圾 |
 | **13** | ★（**暗雷 2 的正面回归**）熔断信号在 Graphiti 真挂时**会不会涨** | 停掉 Graphiti 容器 / 断其出网 → 投 20 条 → 观察 MQ 积压之和 与「未确认数」两条曲线的差异 | 积压之和应**单调上涨并触发熔断**；未确认数应变 0（**这正是 rev.1 的盲区，必须亲眼看到它失效**） |
 
+### D.1 实测结果（2026-10-13，B1 落地当日）
+
+**载体**：`src/test/java/com/yangmf/mini_nodepad/GraphitiWriteChainDiagnosticTest.java`
+（5 个有序用例，真 MySQL + 真 RabbitMQ + 真 Graphiti，约 1.5 分钟一轮）。
+它同时是 **B4 的回归守卫**：只把「等 5 分钟 delay 队列过期」换成直接调用扫描消费者，其余全走生产路径。
+配套两个探针：`_db_query.mjs`（只读 SQL）、`_b1_e2e.mjs`（夹具 / 状态取证 / 清理）。
+
+| # | 验证项 | 结果 | 证据 |
+|---|---|---|---|
+| **7** | 单条 `POST /messages` 端到端落库耗时 | ✅ **≈12.3 s（上界）** | CAS 占位 → `/episodes/{group}` 能读到锚点，轮询粒度 10s。**比早前记录的 15~27s 更快**，3 分钟确认窗余量充足 |
+| **9** | `x-max-priority` 插队是否生效 | ✅ 生效 | 出队顺序 `[10, 1, 1, 1, …]`（`_mq_priority_probe.mjs`） |
+| **11** | `retry.*` → `write.queue` 经 broker TTL+DLX 后 priority 是否保留 | ✅ **保留** | 重试回来后 `properties.priority = 10` → **无需改成手动 republish** |
+| **2b** | `/episodes` 排序键 = `created_at` 倒序 | ✅ 成立 | 用例 ⑤ 每轮断言（用 `OffsetDateTime` 比较，不用字符串比较） |
+| **12** | `NOT EXISTS(审计表)` 真的挡住判否消息 | ✅ **正面回归通过** | 用例 ⑥：造一条满足全部补投条件的候选 → 控制组被捞到（1 条）→ 写 `JUDGE_REJECTED` 审计行 → 实验组 0 条；且**真实 mapper** 的 `selectReplayTargets` 同样挡住 |
+| **6** | `RedisChatMemoryStore` 默认 TTL | ✅ 无风险 | 32 位 hex 键为 `ReJSON-RL` 类型、**TTL = −1（永不过期）** → 不存在会话中途记忆丢失，无需显式设置 |
+| **8** | `/episodes?last_n=200` 的耗时与体积 | ⚠️ **不可测（数据不足）** | 全库 4 个真实用户 group 的 episode 数**均为 0**，探针 group 仅 1 条 → `last_n=20` 与 `200` 都是 23ms / 437 字节。**这两个数不能用来判断「固定大值是否可接受」** → 必须等出现 ≥200 条 episode 的真实 group 后重新校准 |
+| 3 | `source_description` 是否参与 LLM 抽取上下文 | ⏳ 未做 | 需两条对照 episode + 等 LLM 抽取 |
+| 4 | 乱序投递不改裁决 | ⏳ 未做 | 同上 |
+| 5 | `DELETE /entity-edge/{uuid}` 在 v2 镜像是否可用 | ⏳ 未做 | — |
+| 10 | DashScope 429 的透传形态 | ⏳ 未做 | 需人为触发限流 |
+| **13** | 熔断信号在 Graphiti 真挂时是否上涨（暗雷 2 正面回归） | ⏳ 未做 | 需停容器 + 投 20 条。**这是 rev.1 盲区的唯一实证机会，不可省** |
+
+### D.2 ⛔ 本轮实机验证抓到的两个 P0（静态审查不可能发现）
+
+两条都是「Java 侧类型完全合法、只有真打一次库才暴露」的错误，**且失效方式都是静默的**。
+它们也正是「附录 D 存在的理由」——**不要因为麻烦而跳过实机验证**。
+
+#### P0-1 `LocalDateTime.MIN` 超出 MySQL DATETIME 定义域
+（`GraphitiScanConsumer.resolveWindowStart`）
+
+- 症状：`Incorrect DATETIME value: '+1000000000-01-01 00:00:00'`（**error 1525**）。
+- 后果：**每个新会话的首次扫描必炸**（首次扫描没有 Redis 水位 → 必然走 `MIN` 分支）
+  → 消息 reject 不 requeue → 经 DLX 进 DLQ → **发现层对全新会话完全不工作**，
+  对外只表现为「记忆一直不生成」，日志里除了一条 DLQ 记录再无痕迹。
+- 修法：改用 `EPOCH_FLOOR = 1970-01-01 00:00:00`（在定义域内，且远早于本工程任何真实数据）。
+- 教训：**Java 的极值常量不是 SQL 的极值常量。** 凡把 `MIN` / `MAX` 之类的哨兵绑进 SQL，
+  先查目标列类型（`DATETIME` 只有 1000-01-01 ~ 9999-12-31）的定义域。
+
+#### P0-2 跨表字符列排序规则不一致
+（`graphiti_write_audit` 建表漏写 `COLLATE`）
+
+- 症状：`Illegal mix of collations (utf8mb4_0900_ai_ci,IMPLICIT) and (utf8mb4_unicode_ci,IMPLICIT)`（**error 1267**）。
+- 根因：本库既有表（`book` / `chat_session` / `chat_message`）都是 `utf8mb4_unicode_ci`（RuoYi 建库时的老约定），
+  而 **MySQL 8 的 `utf8mb4` 默认排序规则是 `utf8mb4_0900_ai_ci`**；DDL 只写了 `DEFAULT CHARSET utf8mb4`。
+- 后果：`a.message_id = c.id` 这类**两个列直接比较**的子查询直接抛错 →
+  **Confirm / Replay 两条对账 SQL 每轮必炸** → 消息永远确认不了 → 全部走到 `maxRounds`
+  被误判成 `CONFIRM_TIMEOUT` 隔离。**整套写入链静默退化成「只投不认」。**
+- 修法：建表显式 `COLLATE = utf8mb4_unicode_ci`；DDL 脚本内附**幂等补救**
+  `ALTER TABLE graphiti_write_audit CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`
+- ⚠️ **为什么自查极难发现**：`existsByMessageId`（绑定变量 vs 列）**不会**报错 ——
+  参数的可强制性（coercibility）为 4，列（2）胜出。**只有「列 vs 列」的子查询才暴露。**
+  所以凡新增表，必须检查**每一条跨表列比较**，而不是检查「有没有用过那张表」。
+
+### D.3 两个「自己的工具骗了自己」的教训（方法论）
+
+1. **RabbitMQ `messages_ready` 是 5 秒快照统计**（`collect_statistics_interval` 默认 5000ms）。
+   用它判断「队列刚被清空」会看到 `ready=1` 这种假残留，进而怀疑代码没清干净。
+   → **量真实条数必须用 `POST /api/queues/%2F/{q}/get` + `ackmode=ack_requeue_true`。**
+2. **`/episodes` 只有路径形式**：`GET /episodes/{group_id}?last_n=N`。
+   写成查询参数 `/episodes?group_id=…` 返回 **404**，看起来像「这个用户没有数据」——
+   我据此误判「10-12 的实测数据被清空了」。
+   修正 URL 后实测：真实用户 group 存在但 episode 数为 0（`[]`），探针 group 有数据。
+   → **一个 URL 形式写错，能让你得出与事实完全相反的结论。**
+
+### D.4 一条测试卫生铁律（不遵守会得到「假绿」）
+
+**图谱是有状态的，而 Graphiti 对重复投递零去重能力**（§3.5 铁律 1 的由来）。
+夹具用固定 message id，**上一次运行遗留的 `cm_<id>` episode 会让本轮「等服务端落库」第一轮轮询就命中** ——
+测试照样全绿，但落库耗时量出来的是「跑了两遍的间隔」这种毫无意义的数。
+
+→ 因此 `fixture()` 的**第一步**必须是 `DELETE /group/{groupId}` 清空探针分区（见 `wipeProbeGraph()`）。
+本轮就实测到过**两条同名 episode（created_at 相隔 6 分钟）**，正是没清导致的。
+清理用 `_b1_e2e.mjs cleanup`（删图谱 group + MySQL 夹具行 + 审计行，并复核四类残留计数为 0）。
+
 ---
 
 ## 附录 E · 评审误判驳回记录（2 项 —— 不改架构）
